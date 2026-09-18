@@ -7,7 +7,8 @@ import SurroundCore
 import UIKit
 
 /// Bridges between platform image types and the core package's RGBAImage.
-enum ImageConversion {
+/// Called from background encoding and stitching as well as the UI.
+nonisolated enum ImageConversion {
     private static let ciContext = CIContext(options: [.cacheIntermediates: false])
 
     /// Encodes a camera pixel buffer (any format CoreImage understands) as JPEG.

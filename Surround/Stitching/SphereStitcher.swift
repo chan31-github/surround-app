@@ -3,8 +3,8 @@ import SurroundCore
 
 /// Input to a stitcher: the shot files on disk with their poses, and the yaw
 /// that should become the sphere's front.
-struct StitchJob {
-    struct Shot {
+nonisolated struct StitchJob: Sendable {
+    struct Shot: Sendable {
         let imageURL: URL
         let pose: ShotPose
     }
@@ -14,7 +14,7 @@ struct StitchJob {
     var outputWidth: Int
 }
 
-enum StitchError: LocalizedError {
+nonisolated enum StitchError: LocalizedError {
     case noShots
     case cannotLoad(URL)
 
@@ -29,20 +29,20 @@ enum StitchError: LocalizedError {
 /// Every stitching engine sits behind this so the projection baseline can be
 /// swapped for a feature-matching engine (OpenCV) without touching capture,
 /// storage or the viewer.
-protocol SphereStitcher {
+nonisolated protocol SphereStitcher: Sendable {
     var name: String { get }
     var version: String { get }
-    /// Runs synchronously; call it off the main thread. `progress` is in 0...1
+    /// Runs synchronously; call it off the main actor. `progress` is in 0...1
     /// and may be called from any thread.
-    func stitch(job: StitchJob, progress: @escaping (Float) -> Void) throws -> StitchResult
+    func stitch(job: StitchJob, progress: @escaping @Sendable (Float) -> Void) throws -> StitchResult
 }
 
-/// Pose-only projection stitcher from SurroundCore, wired to files on disk.
-struct ProjectionSphereStitcher: SphereStitcher {
+/// Projection stitcher from SurroundCore, wired to files on disk.
+nonisolated struct ProjectionSphereStitcher: SphereStitcher {
     var name: String { ProjectionStitcher.name }
     var version: String { ProjectionStitcher.version }
 
-    func stitch(job: StitchJob, progress: @escaping (Float) -> Void) throws -> StitchResult {
+    func stitch(job: StitchJob, progress: @escaping @Sendable (Float) -> Void) throws -> StitchResult {
         guard !job.shots.isEmpty else { throw StitchError.noShots }
         var shots: [StitchShot] = []
         shots.reserveCapacity(job.shots.count)

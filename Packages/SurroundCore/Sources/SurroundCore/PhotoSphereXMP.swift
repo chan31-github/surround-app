@@ -2,7 +2,7 @@ import Foundation
 
 /// Google Photo Sphere (GPano) XMP metadata, which is what Google Photos,
 /// Facebook and most desktop viewers use to recognise a 360 image.
-public struct PhotoSphereXMP: Equatable {
+public struct PhotoSphereXMP: Equatable, Sendable {
     public var fullPanoWidthPixels: Int
     public var fullPanoHeightPixels: Int
     public var croppedAreaImageWidthPixels: Int

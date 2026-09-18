@@ -9,7 +9,7 @@ import UIKit
 ///         thumb.jpg        512 x 256 preview
 ///         metadata.json    SphereMetadata
 ///         shots/           source stills, one pose file each, plus capture.json
-struct SphereFiles {
+nonisolated struct SphereFiles: Sendable {
     let directory: URL
 
     var image: URL { directory.appendingPathComponent("sphere.jpg") }
@@ -19,7 +19,7 @@ struct SphereFiles {
     var manifest: URL { shots.appendingPathComponent("capture.json") }
 }
 
-enum SphereStoreError: LocalizedError {
+nonisolated enum SphereStoreError: LocalizedError {
     case imageEncoding
 
     var errorDescription: String? {
@@ -29,7 +29,7 @@ enum SphereStoreError: LocalizedError {
     }
 }
 
-enum SphereStore {
+nonisolated enum SphereStore {
     static var root: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("spheres", isDirectory: true)

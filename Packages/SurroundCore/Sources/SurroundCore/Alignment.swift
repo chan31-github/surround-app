@@ -1,6 +1,6 @@
 import Foundation
 
-public struct AlignmentThresholds: Equatable {
+public struct AlignmentThresholds: Equatable, Sendable {
     /// Maximum angle between the viewing direction and the target.
     public var angleToleranceDegrees: Float = 3
     /// Maximum absolute roll. Nil disables the roll check (the stitcher does not
@@ -16,7 +16,7 @@ public struct AlignmentThresholds: Equatable {
     public init() {}
 }
 
-public struct AlignmentState: Equatable {
+public struct AlignmentState: Equatable, Sendable {
     /// Target yaw minus current yaw, wrapped to (-180, 180]. Positive means turn right.
     public var deltaYawDegrees: Float
     /// Target pitch minus current pitch. Positive means tilt up.

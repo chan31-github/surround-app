@@ -2,7 +2,7 @@ import Foundation
 import Dispatch
 
 /// One captured photo with the camera orientation it was taken at.
-public struct StitchShot {
+public struct StitchShot: Sendable {
     public var image: RGBAImage
     /// Intrinsics for `image`'s pixel size.
     public var intrinsics: CameraIntrinsics
@@ -16,7 +16,7 @@ public struct StitchShot {
     }
 }
 
-public struct StitchOptions: Equatable {
+public struct StitchOptions: Equatable, Sendable {
     public var outputWidth: Int = 4096
     /// Width of the fade at each image border, as a fraction of the image
     /// size. Seams do the blending between neighbours, so this only needs to
@@ -45,7 +45,7 @@ public struct StitchOptions: Equatable {
     }
 }
 
-public struct StitchResult {
+public struct StitchResult: Sendable {
     public var image: RGBAImage
     public var layout: EquirectangularLayout
     /// Fraction of painted pixels per output row.
@@ -99,43 +99,30 @@ public enum ProjectionStitcher {
 
     /// Projects every shot into `layout` and blends by weight. With `tables`
     /// each shot owns the pixels between its two seams; without, the border
-    /// feather alone decides the blend.
+    /// feather alone decides the blend. Rows are split into bands rendered in
+    /// parallel; each band writes only its own rows.
     private static func composite(layout: EquirectangularLayout,
                                   prepared: [Prepared],
                                   tables: SeamTables?,
                                   seamFeatherDegrees: Float,
                                   sources: [UnsafePointer<UInt8>],
-                                  progress: ((Float) -> Void)?) -> Composite {
+                                  progress: (@Sendable (Float) -> Void)?) -> Composite {
         let outW = layout.width
         let outH = layout.height
-        let seamFeather = max(0.01, seamFeatherDegrees)
-        var sinYaw = [Float](repeating: 0, count: outW)
-        var cosYaw = [Float](repeating: 0, count: outW)
-        for x in 0..<outW {
-            let yaw = Angle.radians(layout.yawDegrees(forColumn: Float(x) + 0.5))
-            sinYaw[x] = sin(yaw)
-            cosYaw[x] = cos(yaw)
-        }
-        var sinPitch = [Float](repeating: 0, count: outH)
-        var cosPitch = [Float](repeating: 0, count: outH)
-        for y in 0..<outH {
-            let pitch = Angle.radians(layout.pitchDegrees(forRow: Float(y) + 0.5))
-            sinPitch[y] = sin(pitch)
-            cosPitch[y] = cos(pitch)
-        }
+        let sinYaw = (0..<outW).map { sin(Angle.radians(layout.yawDegrees(forColumn: Float($0) + 0.5))) }
+        let cosYaw = (0..<outW).map { cos(Angle.radians(layout.yawDegrees(forColumn: Float($0) + 0.5))) }
+        let sinPitch = (0..<outH).map { sin(Angle.radians(layout.pitchDegrees(forRow: Float($0) + 0.5))) }
+        let cosPitch = (0..<outH).map { cos(Angle.radians(layout.pitchDegrees(forRow: Float($0) + 0.5))) }
 
         var output = [UInt8](repeating: 0, count: outW * outH * 4)
         var coverageCounts = [Int32](repeating: 0, count: outH)
         let bandRows = 16
         let bands = (outH + bandRows - 1) / bandRows
-        let progressLock = NSLock()
-        var bandsDone = 0
         let relYaw = tables?.relYaw ?? []
         let seamLeft = tables?.left ?? []
         let seamRight = tables?.right ?? []
         let leftFeather = tables?.leftFeather ?? []
         let rightFeather = tables?.rightFeather ?? []
-        let useSeams = tables != nil
 
         output.withUnsafeMutableBufferPointer { out in
             coverageCounts.withUnsafeMutableBufferPointer { cov in
@@ -145,58 +132,20 @@ public enum ProjectionStitcher {
                         leftFeather.withUnsafeBufferPointer { leftFPtr in
                         rightFeather.withUnsafeBufferPointer { rightFPtr in
                             guard let outBase = out.baseAddress, let covBase = cov.baseAddress else { return }
+                            let work = BandWork(outW: outW, outH: outH, bandRows: bandRows,
+                                                sinYaw: sinYaw, cosYaw: cosYaw, sinPitch: sinPitch, cosPitch: cosPitch,
+                                                prepared: prepared, sources: sources,
+                                                out: outBase, coverage: covBase,
+                                                seams: tables == nil ? nil : BandWork.Seams(
+                                                    relYaw: relYawPtr.baseAddress!, left: leftPtr.baseAddress!,
+                                                    right: rightPtr.baseAddress!, leftFeather: leftFPtr.baseAddress!,
+                                                    rightFeather: rightFPtr.baseAddress!,
+                                                    feather: max(0.01, seamFeatherDegrees)))
+                            let counter = ProgressCounter()
                             DispatchQueue.concurrentPerform(iterations: bands) { band in
-                                let y0 = band * bandRows
-                                let y1 = min(outH, y0 + bandRows)
-                                for y in y0..<y1 {
-                                    let sp = sinPitch[y]
-                                    let cp = cosPitch[y]
-                                    var painted: Int32 = 0
-                                    var o = y * outW * 4
-                                    for x in 0..<outW {
-                                        let d = Vec3(sinYaw[x] * cp, sp, -cosYaw[x] * cp)
-                                        var r: Float = 0, g: Float = 0, b: Float = 0, wsum: Float = 0
-                                        for i in 0..<prepared.count {
-                                            let p = prepared[i]
-                                            guard let uv = p.projector.project(d) else { continue }
-                                            let u = uv.u
-                                            let v = uv.v
-                                            var w = min(1, min(min(u, p.projector.maxU - u) / p.featherU,
-                                                               min(v, p.projector.maxV - v) / p.featherV))
-                                            if w <= 0 { continue }
-                                            if useSeams {
-                                                let rel = relYawPtr[i * outW + x]
-                                                let t = i * outH + y
-                                                let dist = min((rel - leftPtr[t]) / max(seamFeather, leftFPtr[t]),
-                                                               (rightPtr[t] - rel) / max(seamFeather, rightFPtr[t]))
-                                                // Never drop to zero: when the owning shot has no pixel
-                                                // here, the neighbour still fills it after normalisation.
-                                                w *= max(0.02, min(1, 0.5 + dist))
-                                            }
-                                            let s = PixelSampling.bilinearRGB(sources[i], width: p.projector.width, height: p.projector.height, u: u, v: v)
-                                            r += s.r * p.gain * w
-                                            g += s.g * p.gain * w
-                                            b += s.b * p.gain * w
-                                            wsum += w
-                                        }
-                                        if wsum > 0 {
-                                            let inv = 1 / wsum
-                                            outBase[o] = UInt8(max(0, min(255, (r * inv).rounded())))
-                                            outBase[o + 1] = UInt8(max(0, min(255, (g * inv).rounded())))
-                                            outBase[o + 2] = UInt8(max(0, min(255, (b * inv).rounded())))
-                                            outBase[o + 3] = 255
-                                            painted += 1
-                                        }
-                                        o += 4
-                                    }
-                                    covBase[y] = painted
-                                }
+                                work.render(band: band)
                                 if let progress {
-                                    progressLock.lock()
-                                    bandsDone += 1
-                                    let fraction = Float(bandsDone) / Float(bands)
-                                    progressLock.unlock()
-                                    progress(fraction)
+                                    progress(Float(counter.increment()) / Float(bands))
                                 }
                             }
                         }
@@ -209,10 +158,98 @@ public enum ProjectionStitcher {
         return Composite(pixels: output, coverage: coverageCounts)
     }
 
+    /// Everything one band of rows needs. It is handed to concurrent closures,
+    /// which the compiler cannot verify: the pointers stay valid for the
+    /// enclosing `withUnsafe...` scopes, the read-only ones are shared, and
+    /// the two output pointers are written only at each band's own rows.
+    private struct BandWork: @unchecked Sendable {
+        struct Seams {
+            let relYaw: UnsafePointer<Float>
+            let left: UnsafePointer<Float>
+            let right: UnsafePointer<Float>
+            let leftFeather: UnsafePointer<Float>
+            let rightFeather: UnsafePointer<Float>
+            let feather: Float
+        }
+
+        let outW: Int
+        let outH: Int
+        let bandRows: Int
+        let sinYaw: [Float]
+        let cosYaw: [Float]
+        let sinPitch: [Float]
+        let cosPitch: [Float]
+        let prepared: [Prepared]
+        let sources: [UnsafePointer<UInt8>]
+        let out: UnsafeMutablePointer<UInt8>
+        let coverage: UnsafeMutablePointer<Int32>
+        let seams: Seams?
+
+        func render(band: Int) {
+            let y0 = band * bandRows
+            let y1 = min(outH, y0 + bandRows)
+            for y in y0..<y1 {
+                let sp = sinPitch[y]
+                let cp = cosPitch[y]
+                var painted: Int32 = 0
+                var o = y * outW * 4
+                for x in 0..<outW {
+                    let d = Vec3(sinYaw[x] * cp, sp, -cosYaw[x] * cp)
+                    var r: Float = 0, g: Float = 0, b: Float = 0, wsum: Float = 0
+                    for i in 0..<prepared.count {
+                        let p = prepared[i]
+                        guard let uv = p.projector.project(d) else { continue }
+                        let u = uv.u
+                        let v = uv.v
+                        var w = min(1, min(min(u, p.projector.maxU - u) / p.featherU,
+                                           min(v, p.projector.maxV - v) / p.featherV))
+                        if w <= 0 { continue }
+                        if let seams {
+                            let rel = seams.relYaw[i * outW + x]
+                            let t = i * outH + y
+                            let dist = min((rel - seams.left[t]) / max(seams.feather, seams.leftFeather[t]),
+                                           (seams.right[t] - rel) / max(seams.feather, seams.rightFeather[t]))
+                            // Never drop to zero: when the owning shot has no pixel
+                            // here, the neighbour still fills it after normalisation.
+                            w *= max(0.02, min(1, 0.5 + dist))
+                        }
+                        let s = PixelSampling.bilinearRGB(sources[i], width: p.projector.width, height: p.projector.height, u: u, v: v)
+                        r += s.r * p.gain * w
+                        g += s.g * p.gain * w
+                        b += s.b * p.gain * w
+                        wsum += w
+                    }
+                    if wsum > 0 {
+                        let inv = 1 / wsum
+                        out[o] = UInt8(max(0, min(255, (r * inv).rounded())))
+                        out[o + 1] = UInt8(max(0, min(255, (g * inv).rounded())))
+                        out[o + 2] = UInt8(max(0, min(255, (b * inv).rounded())))
+                        out[o + 3] = 255
+                        painted += 1
+                    }
+                    o += 4
+                }
+                coverage[y] = painted
+            }
+        }
+    }
+
+    private final class ProgressCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = 0
+
+        func increment() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            done += 1
+            return done
+        }
+    }
+
     /// `progress` may be called from any thread.
     public static func stitch(shots: [StitchShot],
                               options: StitchOptions = StitchOptions(),
-                              progress: ((Float) -> Void)? = nil) -> StitchResult {
+                              progress: (@Sendable (Float) -> Void)? = nil) -> StitchResult {
         let layout = EquirectangularLayout(width: options.outputWidth)
         let outW = layout.width
         let n = shots.count

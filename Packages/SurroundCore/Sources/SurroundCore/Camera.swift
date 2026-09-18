@@ -6,7 +6,7 @@ import Foundation
 /// delivers `capturedImage`), with the origin at the top-left and rows
 /// increasing downwards. The camera frame is ARKit's: +X image right, +Y image
 /// up, looking along -Z.
-public struct CameraIntrinsics: Equatable, Codable {
+public struct CameraIntrinsics: Equatable, Codable, Sendable {
     public var fx: Float
     public var fy: Float
     public var cx: Float
@@ -64,7 +64,7 @@ public struct CameraIntrinsics: Equatable, Codable {
 
 /// Orientation of the camera in the world: `rotation` maps camera-frame
 /// vectors to world-frame vectors (ARKit's `camera.transform` upper-left 3x3).
-public struct CameraPose: Equatable {
+public struct CameraPose: Equatable, Sendable {
     public var rotation: Mat3
 
     public init(rotation: Mat3) {

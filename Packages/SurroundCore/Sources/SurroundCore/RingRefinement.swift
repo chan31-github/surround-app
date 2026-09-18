@@ -1,7 +1,7 @@
 import Foundation
 
 /// Tuning for the analysis that runs before compositing a ring of shots.
-public struct RingRefinementOptions: Equatable {
+public struct RingRefinementOptions: Equatable, Sendable {
     /// Correct each shot's yaw and pitch by matching it against its neighbours.
     public var refineAlignment = true
     /// Equalise brightness between neighbours with a per-shot gain.
@@ -41,7 +41,7 @@ public struct RingRefinementOptions: Equatable {
 
 /// What one adjacent pair of shots told us. `to` should be rotated by the
 /// offsets relative to `from` for its content to line up.
-public struct PairMeasurement: Equatable {
+public struct PairMeasurement: Equatable, Sendable {
     public var from: Int
     public var to: Int
     public var yawOffsetDegrees: Float = 0
@@ -53,7 +53,7 @@ public struct PairMeasurement: Equatable {
     public var accepted = false
 }
 
-public struct RingRefinementReport: Equatable {
+public struct RingRefinementReport: Equatable, Sendable {
     /// Shot indices in ring order (increasing yaw).
     public var order: [Int]
     /// Pair k is between `order[k]` and `order[(k + 1) % n]`.
@@ -67,7 +67,7 @@ public struct RingRefinementReport: Equatable {
     public var closurePitchDegrees: Float
 }
 
-public struct RefinedRing {
+public struct RefinedRing: Sendable {
     /// Corrected world-from-camera rotation per shot, in input order.
     public var rotations: [Mat3]
     public var gains: [Float]
@@ -78,7 +78,7 @@ public struct RefinedRing {
 
 /// Where the composite switches from the left shot of a pair to the right
 /// one, as a yaw offset from the pair's midpoint per row of pitch.
-struct RingSeam {
+struct RingSeam: Sendable {
     var midYawDegrees: Float
     var pitchTopDegrees: Float
     var degreesPerRow: Float

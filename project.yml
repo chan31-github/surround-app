@@ -14,10 +14,12 @@ packages:
 
 settings:
   base:
-    # Swift 5 language mode: the app has not been audited for Swift 6 strict
-    # concurrency yet. Revisit once M1 runs on a device.
-    SWIFT_VERSION: "5.0"
-    SWIFT_STRICT_CONCURRENCY: minimal
+    # Swift 6 language mode with main-actor default isolation (spec decision
+    # 16): UI, view models and the capture session are main-actor without
+    # annotation; helpers that background work calls are marked nonisolated.
+    SWIFT_VERSION: "6.0"
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
     TARGETED_DEVICE_FAMILY: "1"
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"

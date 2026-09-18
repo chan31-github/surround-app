@@ -5,7 +5,7 @@ import Foundation
 /// Column x maps to yaw (x / width) * 360 - 180, so the image centre is yaw 0
 /// (the sphere's front). Row y maps to pitch 90 - (y / height) * 180, so the
 /// top row is the zenith.
-public struct EquirectangularLayout: Equatable {
+public struct EquirectangularLayout: Equatable, Sendable {
     public let width: Int
     public let height: Int
 
@@ -38,7 +38,7 @@ public struct EquirectangularLayout: Equatable {
 }
 
 /// 8-bit RGBA image, row-major, 4 bytes per pixel, no padding.
-public struct RGBAImage: Equatable {
+public struct RGBAImage: Equatable, Sendable {
     public let width: Int
     public let height: Int
     public var pixels: [UInt8]

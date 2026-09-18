@@ -1,16 +1,18 @@
-import Combine
 import CoreLocation
 import Foundation
+import Observation
 
 /// One-shot position and compass heading for tagging a capture.
-/// Must be used from the main thread.
-final class LocationService: NSObject, ObservableObject, CLLocationManagerDelegate {
-    @Published private(set) var location: CLLocation?
-    @Published private(set) var heading: CLHeading?
-    @Published private(set) var isDenied = false
+/// Main-actor isolated; the location manager is created on the main thread,
+/// so CoreLocation delivers its delegate callbacks there.
+@Observable
+final class LocationService: NSObject, CLLocationManagerDelegate {
+    private(set) var location: CLLocation?
+    private(set) var heading: CLHeading?
+    private(set) var isDenied = false
 
-    private let manager = CLLocationManager()
-    private var wantsUpdates = false
+    @ObservationIgnored private let manager = CLLocationManager()
+    @ObservationIgnored private var wantsUpdates = false
 
     override init() {
         super.init()

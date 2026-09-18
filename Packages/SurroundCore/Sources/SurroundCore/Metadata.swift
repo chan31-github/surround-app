@@ -1,7 +1,7 @@
 import Foundation
 
 /// Pose and intrinsics of one captured shot, stored next to its image file.
-public struct ShotPose: Codable, Equatable {
+public struct ShotPose: Codable, Equatable, Sendable {
     public var index: Int
     /// Session-relative timestamp, seconds.
     public var timestamp: TimeInterval
@@ -51,7 +51,7 @@ public struct ShotPose: Codable, Equatable {
 
 /// Everything recorded during one capture session, written as `capture.json`
 /// in the shots folder so a sphere can be re-stitched later.
-public struct CaptureManifest: Codable, Equatable {
+public struct CaptureManifest: Codable, Equatable, Sendable {
     public var formatVersion: Int = 1
     public var startedAt: Date
     /// ARKit yaw of the first shot; the sphere's front (yaw 0) in stitched output.
@@ -69,7 +69,7 @@ public struct CaptureManifest: Codable, Equatable {
 
 /// `metadata.json` for a stored sphere. Files are the source of truth; the
 /// app's database index can be rebuilt from these.
-public struct SphereMetadata: Codable, Equatable {
+public struct SphereMetadata: Codable, Equatable, Sendable {
     public var formatVersion: Int = 1
     public var id: UUID
     public var capturedAt: Date

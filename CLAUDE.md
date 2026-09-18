@@ -16,7 +16,11 @@ build loop.
 - The Xcode project is generated from `project.yml` by XcodeGen and is not
   committed. New source files under `Surround/` are picked up automatically;
   new Info.plist keys go in `project.yml`.
-- The app target uses Swift 5 language mode (`SWIFT_VERSION: "5.0"`).
+- The app target uses Swift 6 language mode with main-actor default
+  isolation and approachable concurrency. Everything is main-actor unless
+  marked `nonisolated`; mark helpers that background work calls (stitching,
+  image conversion, file store) `nonisolated`, and mark value types that
+  cross into background tasks `Sendable`.
 
 ## Conventions that must not drift
 

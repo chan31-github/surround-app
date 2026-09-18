@@ -1,12 +1,12 @@
-import Combine
 import CoreLocation
 import Foundation
+import Observation
 import SwiftData
 import SurroundCore
 import UIKit
 
-@MainActor
-final class CaptureViewModel: ObservableObject {
+@Observable
+final class CaptureViewModel {
     enum Stage: Equatable {
         case preview
         case capturing
@@ -15,18 +15,17 @@ final class CaptureViewModel: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var stage: Stage = .preview
-    @Published private(set) var reviewImage: UIImage?
-    @Published private(set) var metadata: SphereMetadata?
+    private(set) var stage: Stage = .preview
+    private(set) var reviewImage: UIImage?
+    private(set) var metadata: SphereMetadata?
 
     let capture = CaptureSession()
     let location = LocationService()
-    var stitcher: SphereStitcher = ProjectionSphereStitcher()
+    var stitcher: any SphereStitcher = ProjectionSphereStitcher()
     var outputWidth = 4096
 
     private let sphereID: UUID
     private let files: SphereFiles
-    private var cancellables = Set<AnyCancellable>()
     private var hasStarted = false
     private var kept = false
     private var frontLocation: CLLocation?
@@ -37,23 +36,17 @@ final class CaptureViewModel: ObservableObject {
         sphereID = created.id
         files = created.files
 
-        capture.$phase
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] phase in
-                guard let self else { return }
-                switch phase {
-                case .capturing: self.stage = .capturing
-                case .finished: self.stitch()
-                default: break
-                }
+        capture.onPhaseChange = { [weak self] phase in
+            guard let self else { return }
+            switch phase {
+            case .capturing: stage = .capturing
+            case .finished: stitch()
+            default: break
             }
-            .store(in: &cancellables)
-
-        capture.$errorMessage
-            .receive(on: DispatchQueue.main)
-            .compactMap { $0 }
-            .sink { [weak self] message in self?.stage = .failed(message) }
-            .store(in: &cancellables)
+        }
+        capture.onError = { [weak self] message in
+            self?.stage = .failed(message)
+        }
     }
 
     func start() {
@@ -100,7 +93,7 @@ final class CaptureViewModel: ObservableObject {
                             frontYawDegrees: manifest.frontYawDegrees,
                             outputWidth: outputWidth)
         let stitcher = self.stitcher
-        let report: (Float) -> Void = { [weak self] fraction in
+        let report: @Sendable (Float) -> Void = { [weak self] fraction in
             Task { @MainActor in self?.stage = .stitching(fraction) }
         }
         do {
@@ -111,9 +104,7 @@ final class CaptureViewModel: ObservableObject {
             }
             let result: StitchResult
             do {
-                result = try await Task.detached(priority: .userInitiated) {
-                    try stitcher.stitch(job: job, progress: report)
-                }.value
+                result = try await Self.runStitcher(stitcher, job: job, progress: report)
             } catch {
                 throw CaptureError.step("Stitching", error)
             }
@@ -147,9 +138,17 @@ final class CaptureViewModel: ObservableObject {
             stage = .failed(error.localizedDescription)
         }
     }
+
+    /// Runs the stitcher off the main actor; it is CPU-bound for seconds.
+    @concurrent
+    private nonisolated static func runStitcher(_ stitcher: any SphereStitcher,
+                                                job: StitchJob,
+                                                progress: @escaping @Sendable (Float) -> Void) async throws -> StitchResult {
+        try stitcher.stitch(job: job, progress: progress)
+    }
 }
 
-enum CaptureError: LocalizedError {
+nonisolated enum CaptureError: LocalizedError {
     case step(String, Error)
 
     var errorDescription: String? {
@@ -160,7 +159,7 @@ enum CaptureError: LocalizedError {
     }
 }
 
-enum DeviceInfo {
+nonisolated enum DeviceInfo {
     /// Hardware identifier such as "iPhone14,4".
     static var machineIdentifier: String {
         var info = utsname()

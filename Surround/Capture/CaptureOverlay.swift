@@ -4,7 +4,7 @@ import SurroundCore
 /// Guidance drawn over the camera preview: the next target, the crosshair,
 /// tracking warnings and the ring's progress.
 struct CaptureOverlay: View {
-    @ObservedObject var capture: CaptureSession
+    let capture: CaptureSession
     let onStart: () -> Void
     let onCancel: () -> Void
 

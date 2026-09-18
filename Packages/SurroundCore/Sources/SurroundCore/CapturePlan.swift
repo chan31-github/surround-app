@@ -1,7 +1,7 @@
 import Foundation
 
 /// One direction the user must point the camera at.
-public struct CaptureTarget: Equatable, Identifiable {
+public struct CaptureTarget: Equatable, Identifiable, Sendable {
     public let id: Int
     public let yawDegrees: Float
     public let pitchDegrees: Float
@@ -16,7 +16,7 @@ public struct CaptureTarget: Equatable, Identifiable {
 }
 
 /// The ordered set of targets for one sphere.
-public struct CapturePlan: Equatable {
+public struct CapturePlan: Equatable, Sendable {
     public let targets: [CaptureTarget]
     public let yawStepDegrees: Float
 

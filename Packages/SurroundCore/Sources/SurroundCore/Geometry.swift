@@ -7,7 +7,7 @@ import Foundation
 /// - "Forward" at yaw 0 is -Z. Yaw increases clockwise when seen from above
 ///   (compass sense), so +X is yaw +90 degrees.
 /// - Pitch is positive upwards.
-public struct Vec3: Equatable, Codable {
+public struct Vec3: Equatable, Codable, Sendable {
     public var x: Float
     public var y: Float
     public var z: Float
@@ -50,7 +50,7 @@ public struct Vec3: Equatable, Codable {
 }
 
 /// Column-major 3x3 matrix.
-public struct Mat3: Equatable {
+public struct Mat3: Equatable, Sendable {
     public var c0: Vec3
     public var c1: Vec3
     public var c2: Vec3
@@ -103,7 +103,7 @@ public struct Mat3: Equatable {
 }
 
 /// Unit quaternion (x, y, z, w), same component order as CoreMotion and SceneKit.
-public struct Quat: Equatable {
+public struct Quat: Equatable, Sendable {
     public var x: Float
     public var y: Float
     public var z: Float

@@ -1,7 +1,7 @@
 import ARKit
 import AVFoundation
-import Combine
 import Foundation
+import Observation
 import SurroundCore
 import UIKit
 
@@ -17,9 +17,10 @@ struct CapturedShot: Identifiable {
 /// (`captureHighResolutionFrame`) and, through
 /// `configurableCaptureDeviceForPrimaryCamera`, the exposure lock.
 ///
-/// All state is read and written on the main thread; ARKit delivers delegate
-/// callbacks there by default.
-final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
+/// Main-actor isolated; ARKit delivers its delegate callbacks on the main
+/// queue by default, which the delegate methods assume.
+@Observable
+final class CaptureSession: NSObject, ARSessionDelegate {
     enum Phase: Equatable {
         case idle
         /// Camera running, waiting for the user to choose the front and tap Start.
@@ -30,34 +31,38 @@ final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
         case finished
     }
 
-    let session = ARSession()
+    @ObservationIgnored let session = ARSession()
 
-    @Published private(set) var phase: Phase = .idle
-    @Published private(set) var plan: CapturePlan?
-    @Published private(set) var currentTargetIndex = 0
-    @Published private(set) var alignment: AlignmentState?
-    @Published private(set) var currentPose: CameraPose?
-    @Published private(set) var trackingWarning: String?
-    @Published private(set) var shots: [CapturedShot] = []
-    @Published private(set) var isCapturingFrame = false
-    @Published private(set) var errorMessage: String?
+    private(set) var phase: Phase = .idle
+    private(set) var plan: CapturePlan?
+    private(set) var currentTargetIndex = 0
+    private(set) var alignment: AlignmentState?
+    private(set) var currentPose: CameraPose?
+    private(set) var trackingWarning: String?
+    private(set) var shots: [CapturedShot] = []
+    private(set) var isCapturingFrame = false
+    private(set) var errorMessage: String?
     /// Field of view across the direction of rotation (the sensor's short side in portrait).
-    @Published private(set) var yawFieldOfViewDegrees: Float = 50
+    private(set) var yawFieldOfViewDegrees: Float = 50
 
-    var lockExposureAfterFirstShot = true
-    var minimumOverlap: Float = 0.4
-    var thresholds = AlignmentThresholds() {
+    /// Called after every phase change, on the main actor.
+    @ObservationIgnored var onPhaseChange: ((Phase) -> Void)?
+    /// Called when capture fails with a message for the user.
+    @ObservationIgnored var onError: ((String) -> Void)?
+
+    @ObservationIgnored var lockExposureAfterFirstShot = true
+    @ObservationIgnored var minimumOverlap: Float = 0.4
+    @ObservationIgnored var thresholds = AlignmentThresholds() {
         didSet { evaluator.thresholds = thresholds }
     }
 
-    private(set) var frontYawDegrees: Float = 0
-    private(set) var startedAt = Date()
-    private(set) var highResolutionSupported = false
+    @ObservationIgnored private(set) var frontYawDegrees: Float = 0
+    @ObservationIgnored private(set) var startedAt = Date()
+    @ObservationIgnored private(set) var highResolutionSupported = false
 
-    private let evaluator = AlignmentEvaluator()
-    private var shotsDirectory: URL?
-    private let encodingQueue = DispatchQueue(label: "surround.capture.encoding", qos: .userInitiated)
-    private let haptics = UIImpactFeedbackGenerator(style: .medium)
+    @ObservationIgnored private let evaluator = AlignmentEvaluator()
+    @ObservationIgnored private var shotsDirectory: URL?
+    @ObservationIgnored private let haptics = UIImpactFeedbackGenerator(style: .medium)
 
     static var isSupported: Bool { ARWorldTrackingConfiguration.isSupported }
 
@@ -86,7 +91,7 @@ final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
         errorMessage = nil
         evaluator.thresholds = thresholds
         evaluator.reset()
-        phase = .preview
+        transition(to: .preview)
     }
 
     /// Locks the current viewing direction in as the sphere's front and builds the ring plan.
@@ -103,12 +108,23 @@ final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
         currentTargetIndex = 0
         evaluator.reset()
         haptics.prepare()
-        phase = .capturing
+        transition(to: .capturing)
     }
 
     func stop() {
         session.pause()
-        if phase != .finished { phase = .idle }
+        if phase != .finished { transition(to: .idle) }
+    }
+
+    private func transition(to newPhase: Phase) {
+        guard newPhase != phase else { return }
+        phase = newPhase
+        onPhaseChange?(newPhase)
+    }
+
+    private func fail(_ message: String) {
+        errorMessage = message
+        onError?(message)
     }
 
     func manifest() -> CaptureManifest {
@@ -134,7 +150,7 @@ final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func session(_ session: ARSession, didFailWithError error: Error) {
-        errorMessage = error.localizedDescription
+        fail(error.localizedDescription)
     }
 
     func sessionWasInterrupted(_ session: ARSession) {
@@ -155,16 +171,14 @@ final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
             store(frame: frame, index: index, target: target)
             return
         }
-        session.captureHighResolutionFrame { [weak self] highRes, _ in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if let highRes {
-                    self.store(frame: highRes, index: index, target: target)
-                } else if let current = self.session.currentFrame {
-                    self.store(frame: current, index: index, target: target)
-                } else {
-                    self.isCapturingFrame = false
-                }
+        Task { [weak self] in
+            guard let self else { return }
+            if let highRes = try? await session.captureHighResolutionFrame() {
+                store(frame: highRes, index: index, target: target)
+            } else if let current = session.currentFrame {
+                store(frame: current, index: index, target: target)
+            } else {
+                isCapturingFrame = false
             }
         }
     }
@@ -201,36 +215,39 @@ final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
         let imageURL = directory.appendingPathComponent(pose.imageFileName)
         let poseURL = directory.appendingPathComponent(pose.poseFileName)
 
-        // Encode off the main thread. Only the pixel buffer is retained, not the ARFrame.
-        encodingQueue.async { [weak self] in
-            var failure: String?
-            if let data = ImageConversion.jpegData(from: buffer) {
-                do {
-                    try data.write(to: imageURL, options: .atomic)
-                } catch {
-                    failure = "Saving image for shot \(index + 1): \(error.localizedDescription)"
-                }
-                if failure == nil {
-                    do {
-                        let json = try MetadataCoding.encode(pose)
-                        try json.write(to: poseURL, options: .atomic)
-                    } catch {
-                        failure = "Saving pose for shot \(index + 1): \(error.localizedDescription)"
-                    }
-                }
-            } else {
-                failure = "Could not encode the image for shot \(index + 1)."
-            }
-            DispatchQueue.main.async {
-                self?.finishStoring(CapturedShot(fileURL: imageURL, pose: pose), failure: failure)
-            }
+        // Encode off the main actor. Only the pixel buffer is retained, not the
+        // ARFrame. A delivered CVPixelBuffer is immutable and safe to read from
+        // another thread, which the compiler cannot know.
+        nonisolated(unsafe) let pixels = buffer
+        Task { [weak self] in
+            let failure = await Self.encode(pixels, pose: pose, imageURL: imageURL, poseURL: poseURL, index: index)
+            self?.finishStoring(CapturedShot(fileURL: imageURL, pose: pose), failure: failure)
         }
+    }
+
+    /// Writes the still and its pose file; returns a message on failure.
+    @concurrent
+    private nonisolated static func encode(_ buffer: CVPixelBuffer, pose: ShotPose, imageURL: URL, poseURL: URL, index: Int) async -> String? {
+        guard let data = ImageConversion.jpegData(from: buffer) else {
+            return "Could not encode the image for shot \(index + 1)."
+        }
+        do {
+            try data.write(to: imageURL, options: .atomic)
+        } catch {
+            return "Saving image for shot \(index + 1): \(error.localizedDescription)"
+        }
+        do {
+            try MetadataCoding.encode(pose).write(to: poseURL, options: .atomic)
+        } catch {
+            return "Saving pose for shot \(index + 1): \(error.localizedDescription)"
+        }
+        return nil
     }
 
     private func finishStoring(_ shot: CapturedShot, failure: String?) {
         isCapturingFrame = false
         if let failure {
-            errorMessage = failure
+            fail(failure)
             return
         }
         shots.append(shot)
@@ -240,8 +257,8 @@ final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
         }
         currentTargetIndex += 1
         if let plan, currentTargetIndex >= plan.targets.count {
-            phase = .finished
             session.pause()
+            transition(to: .finished)
         }
     }
 

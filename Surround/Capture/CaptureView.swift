@@ -6,7 +6,7 @@ import UIKit
 struct CaptureView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
-    @StateObject private var model = CaptureViewModel()
+    @State private var model = CaptureViewModel()
 
     var body: some View {
         ZStack {
