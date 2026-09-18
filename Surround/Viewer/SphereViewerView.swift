@@ -8,6 +8,9 @@ import UIKit
 /// double-tap to recentre on the sphere's front.
 struct SphereViewerView: UIViewRepresentable {
     let image: UIImage
+    /// Receives the view direction and provides recentring; optional so the
+    /// view can stand alone.
+    var state: ViewerState? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -26,6 +29,8 @@ struct SphereViewerView: UIViewRepresentable {
 
     func updateUIView(_ uiView: SCNView, context: Context) {
         context.coordinator.update(image: image)
+        context.coordinator.state = state
+        state?.recentreAction = { [weak coordinator = context.coordinator] in coordinator?.recentre() }
     }
 
     static func dismantleUIView(_ uiView: SCNView, coordinator: Coordinator) {
@@ -41,6 +46,7 @@ struct SphereViewerView: UIViewRepresentable {
         private let motion = MotionController()
         private weak var view: SCNView?
         private var currentImage: UIImage?
+        var state: ViewerState?
 
         private var usesMotion = false
         private var baseYawRadians: Float?
@@ -104,11 +110,28 @@ struct SphereViewerView: UIViewRepresentable {
             // A parent rotation about +Y of b reduces compass yaw by b, so this
             // makes the view start at the sphere's front (yaw 0) plus any drag.
             yawNode.eulerAngles = SCNVector3(x: 0, y: (baseYawRadians ?? 0) - dragYawRadians, z: 0)
+            report(viewYawRadians: yaw - (baseYawRadians ?? 0) + dragYawRadians)
         }
 
         private func applyDragOnlyOrientation() {
             yawNode.eulerAngles = SCNVector3(x: 0, y: 0, z: 0)
             cameraNode.eulerAngles = SCNVector3(x: dragPitchRadians, y: -dragYawRadians, z: 0)
+            report(viewYawRadians: dragYawRadians)
+        }
+
+        private func report(viewYawRadians: Float) {
+            state?.report(viewYawDegrees: Angle.wrapDegrees180(Angle.degrees(viewYawRadians)),
+                          fieldOfViewDegrees: Float(camera.fieldOfView))
+        }
+
+        /// Faces the sphere's front from the phone's current direction, at the
+        /// default zoom. Double-tap and the compass rose both call this.
+        func recentre() {
+            dragYawRadians = 0
+            dragPitchRadians = 0
+            baseYawRadians = nil
+            camera.fieldOfView = 75
+            if !usesMotion { applyDragOnlyOrientation() }
         }
 
         // MARK: Gestures
@@ -141,17 +164,14 @@ struct SphereViewerView: UIViewRepresentable {
                 pinchStartFOV = camera.fieldOfView
             case .changed:
                 camera.fieldOfView = max(minFOV, min(maxFOV, pinchStartFOV / g.scale))
+                if !usesMotion { applyDragOnlyOrientation() }
             default:
                 break
             }
         }
 
         @objc private func handleDoubleTap(_ g: UITapGestureRecognizer) {
-            dragYawRadians = 0
-            dragPitchRadians = 0
-            baseYawRadians = nil
-            camera.fieldOfView = 75
-            if !usesMotion { applyDragOnlyOrientation() }
+            recentre()
         }
     }
 }

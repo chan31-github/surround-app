@@ -67,8 +67,7 @@ private struct ReviewView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            SphereViewerView(image: image)
-                .ignoresSafeArea()
+            SphereViewer(image: image, frontHeadingDegrees: metadata?.frontHeadingDegrees)
             VStack(spacing: 12) {
                 if let metadata, let lo = metadata.coveredPitchMinDegrees, let hi = metadata.coveredPitchMaxDegrees {
                     Text(String(format: "Covered %.0f° below to %.0f° above the horizon", -lo, hi))

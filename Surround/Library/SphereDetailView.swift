@@ -16,8 +16,7 @@ struct SphereDetailView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let image {
-                SphereViewerView(image: image)
-                    .ignoresSafeArea()
+                SphereViewer(image: image, frontHeadingDegrees: sphere.frontHeadingDegrees)
             } else {
                 ProgressView()
                     .tint(.white)

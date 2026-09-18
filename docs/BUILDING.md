@@ -32,8 +32,8 @@ swift test
 ```
 
 These cover the geometry, capture plan, alignment logic, projection stitcher,
-ring refinement (alignment, gain, seams), metadata and XMP code, and need no
-device. Set `SURROUND_DUMP=<dir>` to have the stitcher tests write their
+ring refinement (alignment, gain, seams), trip day keys, metadata and XMP
+code, and need no device. Set `SURROUND_DUMP=<dir>` to have the stitcher tests write their
 synthetic outputs as PPM files for eyeballing.
 
 ## Re-stitching a capture on the Mac
@@ -52,6 +52,18 @@ A few lines of macOS Swift that depend on `Packages/SurroundCore`, load each
 `capture.json` will reproduce the phone's output exactly, and
 `StitchResult.refinement` reports what the ring analysis measured per pair.
 That loop runs in under a second and is how the stitcher is tuned.
+
+## Trying the library and map in the simulator
+
+The simulator cannot capture, but it can show spheres. Copy a sphere folder
+from the phone (see above) into the simulator app's Documents folder; the
+index is rebuilt from the folders at launch, so the sphere appears in the
+list and, if it has a position, on the map:
+
+```
+xcrun simctl get_app_container booted com.chan31.surround data
+cp -R <sphere-uuid> "<that path>/Documents/spheres/"
+```
 
 ## First run checklist for M1
 
@@ -79,6 +91,7 @@ That loop runs in under a second and is how the stitcher is tuned.
 | `Surround/Capture` | ARKit session, guidance overlay, capture flow |
 | `Surround/Stitching` | `SphereStitcher` protocol, projection engine adapter, image conversion |
 | `Surround/Viewer` | SceneKit sphere, motion controller |
-| `Surround/Library` | SwiftData record, file store, library and detail screens |
+| `Surround/Library` | SwiftData records (sphere index, trip names), file store with index rebuild, library and detail screens |
+| `Surround/Map` | `MKMapView` wrapper: sphere pins with heading wedge, clusters, callouts, remembered region |
 | `Surround/Location` | Position and compass heading |
 | `project.yml` | XcodeGen project definition, including Info.plist keys |

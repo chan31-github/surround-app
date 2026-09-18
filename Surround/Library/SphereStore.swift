@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import SurroundCore
 import UIKit
 
@@ -59,6 +60,35 @@ nonisolated enum SphereStore {
         }
         try MetadataCoding.encode(metadata).write(to: files.metadata, options: .atomic)
         return ui
+    }
+
+    /// Every sphere folder that has a metadata file, whatever the index says.
+    static func storedMetadata() -> [SphereMetadata] {
+        guard let folders = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return [] }
+        return folders.compactMap { folder in
+            guard let data = try? Data(contentsOf: folder.appendingPathComponent("metadata.json")),
+                  let meta = try? MetadataCoding.decode(SphereMetadata.self, from: data),
+                  folder.lastPathComponent == meta.id.uuidString else { return nil }
+            return meta
+        }
+    }
+
+    /// Makes the index match the folders: files are the source of truth, so a
+    /// folder without a row gets one and a row without a folder is dropped.
+    /// Cheap enough to run at every launch; later this is also how spheres
+    /// synced from another device appear.
+    @MainActor
+    static func reconcileIndex(in context: ModelContext) {
+        let stored = storedMetadata()
+        let onDisk = Set(stored.map { $0.id })
+        let records = (try? context.fetch(FetchDescriptor<SphereRecord>())) ?? []
+        let indexed = Set(records.map { $0.id })
+        for record in records where !onDisk.contains(record.id) {
+            context.delete(record)
+        }
+        for meta in stored where !indexed.contains(meta.id) {
+            context.insert(SphereRecord(metadata: meta, fileSizeBytes: directorySize(files(for: meta.id).directory)))
+        }
     }
 
     static func loadMetadata(id: UUID) throws -> SphereMetadata {

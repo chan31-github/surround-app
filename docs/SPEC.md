@@ -199,7 +199,12 @@ distortion on the ultra-wide degrade the stitch. Ultra-wide is a possible
   Landscape is the better way to view a panorama and is supported on both
   devices. Drag adds a yaw offset on top of
   the device attitude (yaw and pitch when no motion sensors are available).
-  Double-tap recentres and resets zoom.
+  Double-tap recentres and resets zoom, as does tapping the compass rose in
+  the corner: a north-up dial (when the front heading is known) with a tick
+  at the sphere's front and a wedge for the current field of view, so the
+  viewer answers "which way is the front" and "which way am I looking" the
+  same way the map pin does. The front is anchored to the phone's direction
+  when the sphere opens; true compass alignment is a possible later opt-in.
 - The sphere mesh is built by the app with texture coordinates that follow
   the equirectangular layout exactly, rather than relying on SCNSphere's
   mapping, so the seam and mirroring are deterministic.
@@ -266,7 +271,10 @@ the position into `metadata.json` with an `isManualPosition` flag.
 `clusteringIdentifier`. A cluster shows the count and, when it contains a
 single trip, that trip's name. Tapping a cluster zooms to fit its members.
 Repeated visits to the same summit are the common case, so clustering is
-required rather than optional.
+required rather than optional. When a cluster's members are within about
+30 m of each other, or the map is already zoomed to their extent, tapping
+it lists the members in a sheet instead of zooming, since zooming would
+change nothing.
 
 **Base map.** Apple's standard map with elevation rendering
 (`preferredConfiguration = MKStandardMapConfiguration(elevationStyle:

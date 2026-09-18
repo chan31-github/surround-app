@@ -12,6 +12,7 @@ final class SphereRecord {
     var latitude: Double?
     var longitude: Double?
     var altitudeMetres: Double?
+    var horizontalAccuracyMetres: Double?
     var frontHeadingDegrees: Double?
     var coveredPitchMinDegrees: Double?
     var coveredPitchMaxDegrees: Double?
@@ -26,6 +27,7 @@ final class SphereRecord {
         latitude = metadata.latitude
         longitude = metadata.longitude
         altitudeMetres = metadata.altitudeMetres
+        horizontalAccuracyMetres = metadata.horizontalAccuracyMetres
         frontHeadingDegrees = metadata.frontHeadingDegrees
         coveredPitchMinDegrees = metadata.coveredPitchMinDegrees.map(Double.init)
         coveredPitchMaxDegrees = metadata.coveredPitchMaxDegrees.map(Double.init)

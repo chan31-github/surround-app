@@ -7,6 +7,6 @@ struct SurroundApp: App {
         WindowGroup {
             LibraryView()
         }
-        .modelContainer(for: SphereRecord.self)
+        .modelContainer(for: [SphereRecord.self, TripRecord.self])
     }
 }
