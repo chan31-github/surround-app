@@ -3,10 +3,9 @@
 Working title: **Surround**. An iOS app for capturing and viewing immersive
 photo spheres of scenic viewpoints, built for hiking in Hong Kong.
 
-Status: v0.4. Decisions marked **Confirmed** were agreed during requirements
-review. Section 8 records the decisions that were open in v0.1 and how they
-were settled; section 8.1 lists decisions proposed in v0.3 and v0.4 that
-still need confirmation.
+Status: v0.5. Decisions marked **Confirmed** were agreed during requirements
+review. Section 8 records every decision and when it was settled. There are
+no open decisions.
 
 ---
 
@@ -369,14 +368,14 @@ author could verify them:
 - Known: Xcode 26 and later can build the app in Swift 6 language mode
   with default main-actor isolation for the app module, which removes most
   of the manual `@MainActor` and `Sendable` bookkeeping the scaffold
-  avoids by staying in Swift 5 mode. Proposed decision 15.
+  avoids by staying in Swift 5 mode. Decision 16.
 - Known: `@Observable` view models instead of `ObservableObject` and
   Combine, which simplifies `CaptureViewModel` and `CaptureSession`. No
   minimum-OS change needed, but worth doing in the same pass.
 - Known: every MapKit, SwiftData and SwiftUI API through iOS 26 is
   available without availability checks.
 - To check: whether the SwiftUI `Map` in the iOS 27 SDK supports
-  annotation clustering and custom annotation views. If it does, proposed
+  annotation clustering and custom annotation views. If it does,
   decision 9 (wrapped `MKMapView`) is reversed and the map is written in
   SwiftUI. If not, decision 9 stands.
 - To check: whether ARKit in iOS 27 offers still capture with custom photo
@@ -406,7 +405,8 @@ author could verify them:
 
 ## 8. Decisions record
 
-Settled after v0.1 review.
+Decisions 1 to 6 were settled after the v0.1 review; 14 and 15 in v0.4; the
+rest were proposed in v0.3 and v0.4 and confirmed in v0.5.
 
 | # | Question | Decision |
 |---|---|---|
@@ -416,27 +416,19 @@ Settled after v0.1 review.
 | 4 | Apple Developer account | Free for M1, paid before M3. iCloud sync (F17) is the first feature that cannot work on a free account. |
 | 5 | Build and test loop | Code is written in this repository; the owner builds and runs on a Mac mini M4 with Xcode and the phone connected. The core package's tests run with `swift test` on the Mac. |
 | 6 | Uncovered sky and ground in a cylindrical capture | Dark gradient, no pitch clamp. |
+| 7 | Map as a toggle inside the library, or a separate tab? | Toggle in the library toolbar, so filters and selection are shared and there is one place to look for spheres. **Confirmed** in v0.5 (proposed in v0.3). |
+| 8 | Priority of the map view | P1, in M3. It is cheap and it changes how the library is used, so it should land before any sharing work. **Confirmed** in v0.5 (proposed in v0.3). |
+| 9 | `MKMapView` wrapper versus the SwiftUI `Map` | `MKMapView`, for clustering, custom pins with the heading wedge, and overlays. The SwiftUI `Map` would need replacing as soon as clustering is added. **Confirmed** in v0.5 (proposed in v0.3). |
+| 10 | Base map | Apple standard with realistic elevation, satellite toggle. No OSM tiles in M3. **Confirmed** in v0.5 (proposed in v0.3). |
+| 11 | Trips | Automatic by calendar day, renamable, replacing the manual trip tagging in the v0.2 wording of F9. Tags stay as optional free text. **Confirmed** in v0.5 (proposed in v0.3). |
+| 12 | Manual pin placement for spheres without a position | Yes, by long press, flagged as manual in metadata. **Confirmed** in v0.5 (proposed in v0.3). |
+| 13 | Peaks dataset source | OpenStreetMap extract, because it also has viewpoints and is easy to refresh; record the attribution. Decide when F22 or F12 starts, not now. **Confirmed** in v0.5 (proposed in v0.3). |
 | 14 | Minimum OS | iOS 27 and iPadOS 27. **Confirmed** in v0.4. The `SurroundCore` package keeps its lower platform floor because a library needs no minimum and the tools version that names iOS 27 is not required. |
 | 15 | iPad | In scope as a viewing and browsing device, with iCloud sync. **Confirmed** in v0.4. |
-
-### 8.1 Proposed decisions for the map view
-
-Proposed in v0.3, awaiting confirmation. The recommendation applies until
-overridden.
-
-| # | Question | Recommendation |
-|---|---|---|
-| 7 | Map as a toggle inside the library, or a separate tab? | Toggle in the library toolbar, so filters and selection are shared and there is one place to look for spheres. |
-| 8 | Priority of the map view | P1, in M3. It is cheap and it changes how the library is used, so it should land before any sharing work. |
-| 9 | `MKMapView` wrapper versus the SwiftUI `Map` | `MKMapView`, for clustering, custom pins with the heading wedge, and overlays. The SwiftUI `Map` would need replacing as soon as clustering is added. |
-| 10 | Base map | Apple standard with realistic elevation, satellite toggle. No OSM tiles in M3. |
-| 11 | Trips | Automatic by calendar day, renamable, replacing the manual trip tagging in the v0.2 wording of F9. Tags stay as optional free text. |
-| 12 | Manual pin placement for spheres without a position | Yes, by long press, flagged as manual in metadata. |
-| 13 | Peaks dataset source | OpenStreetMap extract, because it also has viewpoints and is easy to refresh; record the attribution. Decide when F22 or F12 starts, not now. |
-| 16 | Swift 6 language mode with default main-actor isolation for the app target | Yes, in a dedicated change once M1 builds and runs, not mixed with feature work. Move view models to `@Observable` in the same pass. |
-| 17 | Sync mechanism | iCloud Drive ubiquity container, not CloudKit through SwiftData. CloudKit forbids the unique constraint the index uses and would make the index, not the files, the source of truth. |
-| 18 | Capture on the iPad | Allowed but unsupported: no iPad-specific capture work, portrait only, same as the phone. |
-| 19 | iPhone landscape for the viewer | Yes, once the orientation correction in section 6.7 exists. |
+| 16 | Swift 6 language mode with default main-actor isolation for the app target | Yes, in a dedicated change once M1 builds and runs, not mixed with feature work. Move view models to `@Observable` in the same pass. **Confirmed** in v0.5 (proposed in v0.4). |
+| 17 | Sync mechanism | iCloud Drive ubiquity container, not CloudKit through SwiftData. CloudKit forbids the unique constraint the index uses and would make the index, not the files, the source of truth. **Confirmed** in v0.5 (proposed in v0.4). |
+| 18 | Capture on the iPad | Allowed but unsupported: no iPad-specific capture work, portrait only, same as the phone. **Confirmed** in v0.5 (proposed in v0.4). |
+| 19 | iPhone landscape for the viewer | Yes, once the orientation correction in section 6.7 exists. **Confirmed** in v0.5 (proposed in v0.4). |
 
 ## 9. Out of scope
 
