@@ -182,8 +182,8 @@ final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
             intrinsics = intrinsics.scaled(toWidth: width, height: height)
         }
         // Exposure values are informational; ARKit can report NaN for them.
-        let exposureDuration = frame.exposureDuration.isFinite ? frame.exposureDuration : nil
-        let exposureOffset = frame.exposureOffset.isFinite ? frame.exposureOffset : nil
+        let exposureDuration = frame.camera.exposureDuration.isFinite ? frame.camera.exposureDuration : nil
+        let exposureOffset = frame.camera.exposureOffset.isFinite ? frame.camera.exposureOffset : nil
         let pose = ShotPose(index: index,
                             timestamp: frame.timestamp,
                             transformColumnMajor: Self.columnMajor(frame.camera.transform),
