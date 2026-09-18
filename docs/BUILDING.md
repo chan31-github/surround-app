@@ -91,7 +91,7 @@ cp -R <sphere-uuid> "<that path>/Documents/spheres/"
 | `Surround/Capture` | ARKit session, guidance overlay, capture flow |
 | `Surround/Stitching` | `SphereStitcher` protocol, projection engine adapter, image conversion |
 | `Surround/Viewer` | SceneKit sphere, motion controller |
-| `Surround/Library` | SwiftData records (sphere index, trip names), file store with index rebuild, library and detail screens |
+| `Surround/Library` | SwiftData records (sphere index, trip names), file store with background index rebuild, shared thumbnail cache, library and detail screens |
 | `Surround/Map` | `MKMapView` wrapper: sphere pins with heading wedge, clusters, callouts, remembered region |
 | `Surround/Location` | Position and compass heading |
 | `project.yml` | XcodeGen project definition, including Info.plist keys |

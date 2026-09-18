@@ -73,21 +73,35 @@ nonisolated enum SphereStore {
         }
     }
 
+    /// What a scan of the folders found, relative to the ids the index had.
+    struct IndexScan: Sendable {
+        var onDisk: Set<UUID>
+        var missingFromIndex: [(metadata: SphereMetadata, fileSizeBytes: Int)]
+    }
+
+    /// Reads every metadata file and sizes the folders the index lacks. Runs
+    /// off the main actor; the file reading grows with the library.
+    @concurrent
+    static func scanFolders(indexed: Set<UUID>) async -> IndexScan {
+        let stored = storedMetadata()
+        let missing = stored.filter { !indexed.contains($0.id) }
+            .map { (metadata: $0, fileSizeBytes: directorySize(files(for: $0.id).directory)) }
+        return IndexScan(onDisk: Set(stored.map { $0.id }), missingFromIndex: missing)
+    }
+
     /// Makes the index match the folders: files are the source of truth, so a
     /// folder without a row gets one and a row without a folder is dropped.
-    /// Cheap enough to run at every launch; later this is also how spheres
-    /// synced from another device appear.
+    /// Runs at every launch; later this is also how spheres synced from
+    /// another device appear. Only the SwiftData work touches the main actor.
     @MainActor
-    static func reconcileIndex(in context: ModelContext) {
-        let stored = storedMetadata()
-        let onDisk = Set(stored.map { $0.id })
+    static func reconcileIndex(in context: ModelContext) async {
         let records = (try? context.fetch(FetchDescriptor<SphereRecord>())) ?? []
-        let indexed = Set(records.map { $0.id })
-        for record in records where !onDisk.contains(record.id) {
+        let scan = await scanFolders(indexed: Set(records.map { $0.id }))
+        for record in records where !scan.onDisk.contains(record.id) {
             context.delete(record)
         }
-        for meta in stored where !indexed.contains(meta.id) {
-            context.insert(SphereRecord(metadata: meta, fileSizeBytes: directorySize(files(for: meta.id).directory)))
+        for entry in scan.missingFromIndex {
+            context.insert(SphereRecord(metadata: entry.metadata, fileSizeBytes: entry.fileSizeBytes))
         }
     }
 
@@ -104,6 +118,7 @@ nonisolated enum SphereStore {
 
     static func delete(id: UUID) {
         try? FileManager.default.removeItem(at: files(for: id).directory)
+        ThumbnailCache.shared.remove(id)
     }
 
     static func directorySize(_ url: URL) -> Int {

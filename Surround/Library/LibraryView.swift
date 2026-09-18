@@ -72,7 +72,7 @@ struct LibraryView: View {
                     CaptureView()
                 }
                 .task {
-                    SphereStore.reconcileIndex(in: context)
+                    await SphereStore.reconcileIndex(in: context)
                 }
                 .onChange(of: navigation.focus) { _, focus in
                     guard let focus else { return }
@@ -356,16 +356,9 @@ private struct SphereCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                Color.secondary.opacity(0.2)
-                if let thumb = UIImage(contentsOfFile: SphereStore.files(for: sphere.id).thumbnail.path) {
-                    Image(uiImage: thumb)
-                        .resizable()
-                        .scaledToFill()
-                }
-            }
-            .aspectRatio(2, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            SphereThumbnail(id: sphere.id)
+                .aspectRatio(2, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
             Text(sphere.title.isEmpty ? sphere.capturedAt.formatted(date: .abbreviated, time: .shortened) : sphere.title)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
@@ -433,16 +426,9 @@ private struct PlacementSheet: View {
             onPlace(sphere)
         } label: {
             HStack(spacing: 12) {
-                ZStack {
-                    Color.secondary.opacity(0.2)
-                    if let thumb = UIImage(contentsOfFile: SphereStore.files(for: sphere.id).thumbnail.path) {
-                        Image(uiImage: thumb)
-                            .resizable()
-                            .scaledToFill()
-                    }
-                }
-                .frame(width: 88, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                SphereThumbnail(id: sphere.id)
+                    .frame(width: 88, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(sphere.title.isEmpty ? sphere.capturedAt.formatted(date: .abbreviated, time: .shortened) : sphere.title)
                         .font(.body.weight(.medium))
@@ -472,16 +458,9 @@ private struct ClusterListView: View {
                     onOpen(sphere)
                 } label: {
                     HStack(spacing: 12) {
-                        ZStack {
-                            Color.secondary.opacity(0.2)
-                            if let thumb = UIImage(contentsOfFile: SphereStore.files(for: sphere.id).thumbnail.path) {
-                                Image(uiImage: thumb)
-                                    .resizable()
-                                    .scaledToFill()
-                            }
-                        }
-                        .frame(width: 88, height: 44)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        SphereThumbnail(id: sphere.id)
+                            .frame(width: 88, height: 44)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                         VStack(alignment: .leading, spacing: 2) {
                             Text(sphere.title.isEmpty ? sphere.capturedAt.formatted(date: .abbreviated, time: .shortened) : sphere.title)
                                 .font(.body.weight(.medium))

@@ -110,7 +110,6 @@ struct SphereMapView: UIViewRepresentable {
         var hasFitted = false
         var satellite: Bool?
         private var annotations: [UUID: SphereAnnotation] = [:]
-        private var thumbnails: [UUID: (pin: UIImage, callout: UIImage)] = [:]
         private var polylines: [String: (path: MapPath, line: MKPolyline)] = [:]
         private var dropAnnotation: MKPointAnnotation?
         private var appliedFocus: UUID?
@@ -194,7 +193,6 @@ struct SphereMapView: UIViewRepresentable {
             for (id, annotation) in stale {
                 map.removeAnnotation(annotation)
                 annotations[id] = nil
-                thumbnails[id] = nil
             }
             if !added.isEmpty {
                 map.addAnnotations(added)
@@ -217,16 +215,10 @@ struct SphereMapView: UIViewRepresentable {
         }
 
         private func thumbnail(for id: UUID) -> (pin: UIImage, callout: UIImage)? {
-            if let cached = thumbnails[id] { return cached }
-            guard let full = UIImage(contentsOfFile: SphereStore.files(for: id).thumbnail.path),
-                  let cg = full.cgImage else { return nil }
-            // The centre of the equirectangular thumbnail is the sphere's front.
-            let side = min(cg.width, cg.height)
-            let square = CGRect(x: (cg.width - side) / 2, y: (cg.height - side) / 2, width: side, height: side)
-            guard let cropped = cg.cropping(to: square) else { return nil }
-            let pair = (pin: UIImage(cgImage: cropped), callout: full)
-            thumbnails[id] = pair
-            return pair
+            let cache = ThumbnailCache.shared
+            guard let pin = cache.image(for: id, variant: .pin),
+                  let callout = cache.image(for: id, variant: .callout) else { return nil }
+            return (pin, callout)
         }
 
         // MARK: MKMapViewDelegate
