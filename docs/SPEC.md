@@ -3,9 +3,9 @@
 Working title: **Surround**. An iOS app for capturing and viewing immersive
 photo spheres of scenic viewpoints, built for hiking in Hong Kong.
 
-Status: draft v0.1 for review. Decisions marked **Confirmed** were agreed
-during requirements review. Items under *Open decisions* carry a default
-that applies until overridden.
+Status: v0.2. Decisions marked **Confirmed** were agreed during requirements
+review. Section 8 records the decisions that were open in v0.1 and how they
+were settled.
 
 ---
 
@@ -111,22 +111,27 @@ whole app is native Swift with SwiftUI. There is no framework split.
 | Concern | Choice | Reason |
 |---|---|---|
 | Language and UI | Swift, SwiftUI, with UIKit views where gestures or camera preview need it | Native performance, simplest long-term maintenance for a single iOS app |
-| Camera | AVFoundation (`AVCapturePhotoOutput`) | Full control over exposure lock, focus, and still quality |
-| Orientation during capture | ARKit world tracking (`ARSession` with `ARWorldTrackingConfiguration`) for camera pose; CoreMotion as fallback when ARKit tracking is limited | ARKit fuses camera and IMU and gives drift-corrected rotation, which is what guided capture needs. CoreMotion alone drifts in yaw |
+| Camera and orientation during capture | ARKit world tracking owns the camera: `ARSession` supplies the preview, the drift-corrected camera pose, high-resolution stills through `captureHighResolutionFrame`, and the exposure lock through `configurableCaptureDeviceForPrimaryCamera` | ARKit and an `AVCaptureSession` cannot share the camera, so AVFoundation is not used directly. ARKit fuses camera and IMU and gives drift-corrected rotation, which is what guided capture needs; CoreMotion alone drifts in yaw. When tracking degrades the app pauses capture and tells the user rather than switching sensors |
 | Viewer rendering | SceneKit: camera at the centre of a sphere with inward-facing normals, equirectangular texture | Simple, GPU-accelerated, 60 fps on all supported devices. Metal directly is the fallback if SceneKit limits us |
 | Viewer orientation | CoreMotion `CMDeviceMotion` attitude, reference frame `xArbitraryCorrectedZVertical` | Low latency, no camera needed for playback |
 | Location | CoreLocation for position, altitude, and true heading | Standard |
 | Library index | SwiftData | Native, minimal boilerplate |
-| Stitching | OpenCV (official iOS xcframework) via a small Objective-C++ bridge, using its cylindrical and spherical warpers, exposure compensation, and multi-band blending, seeded with ARKit rotations as initial camera poses | The only mature, well-tested open stitching pipeline available on iOS. Seeding with known rotations makes it robust for low-texture sky and sea, which is where feature matching alone fails on a summit |
+| Stitching, M1 | Projection stitcher in `SurroundCore`: pure Swift, projects each still onto the sphere from its ARKit pose and intrinsics, feather-blends overlaps | No dependency, testable on any platform, and a direct check of whether the poses are good enough. Its seams are the baseline the next engine must beat |
+| Stitching, M2 onwards | OpenCV (official iOS xcframework) via a small Objective-C++ bridge, using its cylindrical and spherical warpers, exposure compensation, and multi-band blending, seeded with ARKit rotations as initial camera poses | The only mature, well-tested open stitching pipeline available on iOS. Seeding with known rotations makes it robust for low-texture sky and sea, which is where feature matching alone fails on a summit |
 
 Apple does not expose the built-in Camera app's panorama stitcher as an API,
 and the Vision framework does not stitch, so a third-party stitcher is
-unavoidable. OpenCV is the one dependency that needs an exit plan: the
-stitcher sits behind a `SphereStitcher` protocol, and a pure-Swift
-"projection-only" stitcher (project each shot onto the sphere using its
-ARKit pose and feather the overlaps, no feature matching) is kept as a
-second implementation. It is lower quality but has no dependency, and it is
-the debugging baseline for whether a capture's poses are sound.
+unavoidable for production quality. OpenCV is the one dependency that needs
+an exit plan: every engine sits behind the `SphereStitcher` protocol, and the
+projection stitcher stays as the dependency-free fallback and the debugging
+baseline for whether a capture's poses are sound.
+
+Code layout: `Packages/SurroundCore` is a Swift package with no platform
+dependencies (geometry, capture plan, alignment, equirectangular layout,
+projection stitcher, metadata, XMP) and unit tests that run with
+`swift test` on a Mac. The `Surround` app target holds everything that
+needs iOS frameworks. The Xcode project is generated from `project.yml`
+with XcodeGen; see `docs/BUILDING.md`.
 
 ### 6.2 One format for both milestones
 
@@ -144,21 +149,26 @@ covered range recorded in metadata. This means:
 
 ### 6.3 Capture flow (M1)
 
-1. User taps Capture. Camera preview starts, ARKit session starts, exposure
-   is auto until the first shot.
-2. The app reads the main camera's field of view and computes a yaw step
-   giving at least 40 percent horizontal overlap. With the main camera in
-   portrait (roughly 47 degrees horizontal), that is about 15 shots per ring.
-3. The user points at the first target (the direction they are facing; this
-   becomes the sphere's front heading). The first shot locks exposure and
-   white balance (F7) and records GPS and heading (F5).
-4. The next target appears at the next yaw. When the current pose is within
-   tolerance and angular velocity is below the steadiness threshold, a still
-   is captured. The coverage ring fills in.
-5. After 360 degrees, stitching runs with a progress indicator. The result
-   opens in the viewer. Buttons: Keep, Retake segment (F6, M3), Discard.
-6. M2 adds rings at pitch plus and minus 35 and 70 degrees, plus zenith and
-   nadir, with the same mechanism.
+1. User taps +. The ARKit session starts with the camera preview; exposure
+   is automatic. Location and compass updates start.
+2. The user centres the view they want as the sphere's front and taps Start.
+   That direction becomes yaw 0 of the sphere; the compass heading and
+   position at that moment are recorded (F5).
+3. The app reads the camera's field of view across the sensor's short side
+   (the direction of rotation in portrait) from ARKit's intrinsics and
+   computes a yaw step giving at least 40 percent overlap. With the main
+   camera that is about 13 shots per ring.
+4. A circle marks the next target. When the viewing direction is within 3
+   degrees of it, the phone has been rotating slower than 12 degrees per
+   second for a quarter of a second, and tracking is normal, a
+   high-resolution still is taken automatically with a haptic tick. The
+   first shot locks exposure and white balance (F7). Each still is written to
+   disk immediately with its pose so memory stays flat.
+5. After the last target the session stops and stitching runs with a
+   progress bar. The result opens in the viewer with the covered pitch range
+   shown. Buttons: Keep, Discard. Retake of a single segment is M3 (F6).
+6. M2 adds rings at further pitches plus zenith and nadir with the same
+   mechanism; `CapturePlan.sphere` already generates that plan.
 
 The main camera is used, not the ultra-wide, because edge sharpness and
 distortion on the ultra-wide degrade the stitch. Ultra-wide is a possible
@@ -169,9 +179,12 @@ distortion on the ultra-wide degrade the stitch. Ultra-wide is a possible
 - Sphere of radius 10 units, camera at origin, texture is the
   equirectangular image, uncovered area drawn in a neutral dark gradient.
 - Camera orientation comes from device attitude, offset so that the sphere's
-  front heading faces the user when the view opens. Drag adds a yaw and
-  pitch offset on top of the device attitude. A "recentre" button resets the
-  offset.
+  front faces the user when the view opens. Drag adds a yaw offset on top of
+  the device attitude (yaw and pitch when no motion sensors are available).
+  Double-tap recentres and resets zoom.
+- The sphere mesh is built by the app with texture coordinates that follow
+  the equirectangular layout exactly, rather than relying on SCNSphere's
+  mapping, so the seam and mirroring are deterministic.
 - Pinch changes the camera's field of view within the 30 to 100 degree
   clamp.
 - Roll from the device is applied so tilting the phone tilts the horizon,
@@ -187,10 +200,15 @@ Documents/
       thumb.jpg           512 x 256
       metadata.json       see below
       shots/              source stills and their poses, kept for re-stitch
-        000.heic
-        000.json          ARKit rotation, timestamp, exposure values
+        capture.json      manifest: front yaw, plan step, all poses
+        000.jpg           still in the sensor's landscape orientation
+        000.json          ARKit transform, intrinsics, timestamp, exposure
         ...
 ```
+
+Stills are stored exactly as the sensor delivers them, without an
+orientation tag, because the stitcher uses the recorded rotation rather than
+the image orientation.
 
 `metadata.json` fields: id, capturedAt, latitude, longitude, altitude,
 frontHeadingDegrees, coveredPitchMinDegrees, coveredPitchMaxDegrees,
@@ -209,21 +227,22 @@ be rebuilt from the folders.
 | Featureless sky and sea defeat feature matching | Stitch fails or warps | Seed OpenCV with ARKit poses; fall back to projection-only stitcher for those regions |
 | ARKit tracking degrades in bright, low-texture scenes | Wrong poses | Detect `limited` tracking state, show a warning, fall back to CoreMotion yaw with a magnetometer reference |
 | OpenCV binary size (roughly 20 to 40 MB) and build friction | Slower iteration | Acceptable for a personal app; revisit only before App Store release |
-| Stitch time on older devices | Frustration on the trail | Stitch at reduced resolution first for preview, full resolution in the background |
+| Stitch time on the iPhone 13 mini | Frustration on the trail | Output is 4096 x 2048 for M1 and stills are downscaled before stitching; stitch at reduced resolution first for preview, full resolution in the background, if measured time exceeds 30 seconds |
+| Roll and screen-up conventions of ARKit's camera frame are assumed, not yet verified on a device | Roll readout wrong; stitch unaffected (it uses the full rotation) | The roll check is disabled by default and the live yaw/pitch/roll readout on the capture screen lets the owner confirm the convention on first run |
 | The owner stops using it because capture takes too long | Project fails its purpose | F10 is a hard target; measure on every hike |
 
-## 8. Open decisions
+## 8. Decisions record
 
-Defaults apply until you say otherwise.
+Settled after v0.1 review.
 
-| # | Question | Default |
+| # | Question | Decision |
 |---|---|---|
-| 1 | Which iPhone model and iOS version will you capture on? This sets the minimum OS and which camera FOV constants to verify first. | iOS 17, iPhone from the last three generations |
-| 2 | Keep source shots after a successful stitch? They roughly triple storage per sphere but allow re-stitching with a better engine later. | Keep, with a per-sphere "delete sources" action and a setting to auto-delete |
-| 3 | Save the stitched image to the iOS Photos app automatically? | No. Explicit export only, so Photos does not fill with duplicates |
-| 4 | Apple Developer account: a free account allows installing on your own phone for 7 days at a time; a paid one allows TestFlight and 1-year installs. | Free for M1, paid before M3 |
-| 5 | Build and test loop: this repository can hold the Swift project, but an iOS app can only be compiled and run on a Mac with Xcode and a physical iPhone (ARKit and the camera do not work in the simulator). | You build and run on your Mac; the agent writes code and unit tests that run on Linux where possible (metadata, projection maths, file layout) |
-| 6 | Should a cylindrical sphere show the empty sky and ground as a dark gradient, or should the viewer clamp pitch so the user cannot look there? | Dark gradient, no clamp, so the missing coverage is honest and motivates M2 |
+| 1 | Capture device | iPhone 13 mini on iOS 27 (A15; fully supports ARKit world tracking and high-resolution frame capture). An iPhone 17 Pro is available for comparison, mainly useful for stitch-time and camera-quality checks. Minimum deployment target stays iOS 17. |
+| 2 | Keep source shots after a successful stitch? | Keep, with a per-sphere "delete sources" action and a setting to auto-delete (M3). |
+| 3 | Save the stitched image to the iOS Photos app automatically? | No. Explicit export only. |
+| 4 | Apple Developer account | Free for M1, paid before M3. |
+| 5 | Build and test loop | Code is written in this repository; the owner builds and runs on a Mac mini M4 with Xcode and the phone connected. The core package's tests run with `swift test` on the Mac. |
+| 6 | Uncovered sky and ground in a cylindrical capture | Dark gradient, no pitch clamp. |
 
 ## 9. Out of scope
 

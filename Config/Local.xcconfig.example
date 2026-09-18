@@ -1,0 +1,9 @@
+// Copy this file to Config/Local.xcconfig (which is git-ignored) and fill in
+// your own values. bootstrap.sh does the copy for you the first time.
+//
+// Your Apple Developer team ID: Xcode > Settings > Accounts > your team,
+// or leave empty and pick the team under Signing & Capabilities in Xcode.
+DEVELOPMENT_TEAM =
+
+// Bundle identifiers must be unique per developer account.
+PRODUCT_BUNDLE_IDENTIFIER = com.chan31.surround
