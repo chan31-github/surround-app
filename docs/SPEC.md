@@ -3,10 +3,10 @@
 Working title: **Surround**. An iOS app for capturing and viewing immersive
 photo spheres of scenic viewpoints, built for hiking in Hong Kong.
 
-Status: v0.3. Decisions marked **Confirmed** were agreed during requirements
+Status: v0.4. Decisions marked **Confirmed** were agreed during requirements
 review. Section 8 records the decisions that were open in v0.1 and how they
-were settled, and section 8.1 lists the map-view decisions proposed in v0.3
-that still need confirmation.
+were settled; section 8.1 lists decisions proposed in v0.3 and v0.4 that
+still need confirmation.
 
 ---
 
@@ -25,8 +25,14 @@ spatial sense that a flat image loses.
   account, or backend work is done until then.
 - **Capture context:** outdoors on a trail. No tripod. Bright sun and haze.
   Wind. Sweaty hands. Possibly no mobile signal. Battery matters.
-- **Viewing context:** at home on the same iPhone, and occasionally showing
-  friends on the phone.
+- **Viewing context:** at home on the same iPhone or on the owner's iPad
+  mini (6th generation), and occasionally showing friends on either. The
+  iPad is a viewing and browsing device first; capture happens on the
+  iPhone. **Confirmed** in v0.4.
+- **Platform baseline:** iOS 27 and iPadOS 27 as the minimum. **Confirmed**
+  in v0.4: the owner's devices all run the current OS and the app is
+  personal, so backward compatibility is worth nothing and every current API
+  can be used without availability checks.
 
 ## 3. Milestones
 
@@ -38,7 +44,7 @@ after M1.
 |---|---|---|
 | M1 Cylindrical POC | Guided 360-degree single-ring capture, on-device stitch, gyro viewer, local library, location and heading metadata. | Owner captures three spheres on a real hike and the look-around playback feels closer to being there than the iPhone panorama does. |
 | M2 Full sphere | Multi-ring capture including zenith and nadir, spherical stitch. Viewer and storage unchanged because M1 already uses the spherical format. | A full sphere captured hand-held on a summit stitches with no gap and no seam visible at normal zoom. |
-| M3 Trail polish | P1 items: segment retake, exposure lock, standard export, trips, map view with heading pins, capture time target. | Owner prefers Surround over the built-in Camera panorama for every viewpoint on a hike, and finds any past sphere from the map without scrolling the list. |
+| M3 Trail polish | P1 items: segment retake, exposure lock, standard export, trips, map view with heading pins, iCloud sync to the iPad, all-orientation viewing, capture time target. | Owner prefers Surround over the built-in Camera panorama for every viewpoint on a hike, finds any past sphere from the map without scrolling the list, and views the day's spheres on the iPad that evening without touching a cable. |
 | M4 Share and release | P2 items and App Store preparation, only if M3 proves the app is useful to others. | Decided later. |
 
 ## 4. Functional requirements
@@ -65,6 +71,7 @@ have, **P3** later or never. IDs are stable for reference in issues.
 | F8 | **Standard export.** Export as an equirectangular JPEG with XMP photo sphere (GPano) metadata. Partial coverage (cylindrical) is expressed via the GPano cropped-area fields. | The exported file opens as a 360 photo in Google Photos and Facebook, and as a cropped panorama in the iOS Photos app. |
 | F9 | **Trips.** Spheres captured on the same calendar day form a trip automatically. A trip can be renamed (for example "MacLehose section 4"), and a sphere can carry free-text tags. The library and the map can be filtered by trip. | No manual step is needed for a sphere to belong to a trip. Renaming a trip is one tap from the library or the map. Tags autocomplete from previous tags. |
 | F10 | **Capture time.** A full ring (M1) takes under 90 seconds; a full sphere (M2) under 3 minutes for a practised user. | Measured on a real hike with a stopwatch. |
+| F17 | **Sync between the owner's devices.** A sphere kept on the iPhone appears on the iPad, and edits to a title, trip name or tags made on either device appear on the other. Deleting on one device deletes on both. See section 6.7. | Within a minute of both devices being online. Works with the app closed on the receiving device. No account beyond the user's iCloud login. Viewing and capture keep working offline; changes reconcile later. |
 | F20 | **Map view.** The library can be shown as a map with one pin per sphere, so a sphere is found by where it was taken rather than when. Tapping a pin shows the thumbnail, title and date, and opens the viewer. See section 6.6. | Opens fitted to all spheres. Pins closer together than about 40 points cluster and expand on tap. A "locate me" button centres on the phone's position. Works offline with whatever base-map tiles are cached; pins and thumbnails never depend on the network. The map shows a sphere within one second of it being kept. |
 | F21 | **Heading on the pin.** Each pin shows the direction the sphere's front faces, as a short wedge, so the map also answers "which way was I looking". | The wedge uses `frontHeadingDegrees`; pins without a heading show a plain dot. The wedge is legible at the default zoom on a 13 mini screen. |
 
@@ -86,7 +93,6 @@ have, **P3** later or never. IDs are stable for reference in issues.
 | ID | Requirement |
 |---|---|
 | F16 | Apple Vision Pro or headset viewing. |
-| F17 | Cloud backup and cross-device sync. |
 | F18 | Video spheres or HDR capture. |
 | F19 | Android version. |
 | F25 | Hike route overlay. Draw the day's actual route on the map from an Apple Health workout route or an imported GPX file (for example from a COROS watch), instead of the straight-line trip path of F23. |
@@ -101,7 +107,7 @@ have, **P3** later or never. IDs are stable for reference in issues.
 | N4 | **Outdoor usability.** Capture screen is legible in direct sunlight (high-contrast overlays, large targets). All capture actions are possible with one thumb. |
 | N5 | **Privacy.** No data leaves the device unless the user exports or shares. No analytics in M1 to M3. Location is stored only with the user's own spheres, and the map view never sends sphere positions anywhere: the base map is fetched by region, the pins are drawn locally. |
 | N6 | **Maintainability.** Stitching, viewer rendering, and storage are behind protocols so each can be replaced. Every third-party dependency has a stated reason and an exit plan. |
-| N7 | **Supported devices.** iOS 17 and later, iPhone only, portrait orientation only for M1. |
+| N7 | **Supported devices.** iOS 27 and iPadOS 27 or later, iPhone and iPad. The library, map and viewer support every orientation on both devices. Capture is portrait only on both devices. |
 
 ## 6. Technical approach
 
@@ -123,6 +129,7 @@ whole app is native Swift with SwiftUI. There is no framework split.
 | Viewer orientation | CoreMotion `CMDeviceMotion` attitude, reference frame `xArbitraryCorrectedZVertical` | Low latency, no camera needed for playback |
 | Location | CoreLocation for position, altitude, and true heading | Standard |
 | Library index | SwiftData | Native, minimal boilerplate |
+| Sync | iCloud Drive: the `spheres/` folder lives in the app's ubiquity container | Files are already the source of truth and each sphere is a self-contained folder, so file sync is the sync. No CloudKit schema constraints, no server code |
 | Map | MapKit through `MKMapView` (UIKit) wrapped for SwiftUI, not the SwiftUI `Map` view | `MKMapView` has annotation clustering, custom annotation views for the heading wedge and thumbnail, and overlays for the trip path; the SwiftUI `Map` on iOS 17 has none of these |
 | Stitching, M1 | Projection stitcher in `SurroundCore`: pure Swift, projects each still onto the sphere from its ARKit pose and intrinsics, feather-blends overlaps | No dependency, testable on any platform, and a direct check of whether the poses are good enough. Its seams are the baseline the next engine must beat |
 | Stitching, M2 onwards | OpenCV (official iOS xcframework) via a small Objective-C++ bridge, using its cylindrical and spherical warpers, exposure compensation, and multi-band blending, seeded with ARKit rotations as initial camera poses | The only mature, well-tested open stitching pipeline available on iOS. Seeding with known rotations makes it robust for low-texture sky and sea, which is where feature matching alone fails on a summit |
@@ -186,8 +193,12 @@ distortion on the ultra-wide degrade the stitch. Ultra-wide is a possible
 
 - Sphere of radius 10 units, camera at origin, texture is the
   equirectangular image, uncovered area drawn in a neutral dark gradient.
-- Camera orientation comes from device attitude, offset so that the sphere's
-  front faces the user when the view opens. Drag adds a yaw offset on top of
+- Camera orientation comes from device attitude, corrected for the current
+  interface orientation (the motion-to-scene mapping written for portrait
+  gains a rotation about the screen normal of 0, 90, 180 or 270 degrees),
+  offset so that the sphere's front faces the user when the view opens.
+  Landscape is the better way to view a panorama and is supported on both
+  devices. Drag adds a yaw offset on top of
   the device attitude (yaw and pitch when no motion sensors are available).
   Double-tap recentres and resets zoom.
 - The sphere mesh is built by the app with texture coordinates that follow
@@ -298,6 +309,82 @@ and the same file serves the viewer labels in F12.
 a different product). Routing, distance or elevation-gain statistics.
 Showing other people's spheres.
 
+### 6.7 iPad, orientation and sync
+
+**What the iPad is for.** Viewing and browsing: a bigger screen for the
+sphere, and a map next to the list. Capture on the iPad mini works
+technically (A15, ARKit, 12 MP rear camera) and nothing blocks it, but the
+capture flow is designed and tested for a phone held in one hand; it is
+not a supported iPad use case and gets no iPad-specific work.
+
+**Layout.** In a regular-width window (iPad, and iPhone landscape is not
+regular) the library shows the list and the map side by side with a shared
+selection, using `NavigationSplitView`: trips in the sidebar, list or grid
+in the content column, map or viewer in the detail column. In compact
+width the existing stack with the list/map toggle remains. The viewer
+opens full screen on both devices.
+
+**Orientation.** The library, map and viewer support all orientations on
+both devices. Two pieces of code currently assume portrait and must become
+orientation-aware before the lock is lifted:
+
+- The viewer's motion mapping (section 6.4). The device frame's screen-up
+  axis changes with interface orientation; the correction is one extra
+  rotation about the screen normal, taken from the window scene's
+  interface orientation.
+- Capture. It stays portrait only. On both devices the capture screen shows
+  a "rotate to portrait" prompt when the interface is landscape rather
+  than trying to handle landscape geometry (the yaw field of view and the
+  screen-up axis both swap).
+
+Project settings: `TARGETED_DEVICE_FAMILY` 1,2; iPhone orientations
+portrait plus both landscapes; iPad all four; `UIRequiresFullScreen` false
+so Split View and Stage Manager work; `UIRequiredDeviceCapabilities`
+keeps `arkit`, which every iPad on iPadOS 27 satisfies.
+
+**Sync (F17).** Moving the `spheres/` folder into the app's iCloud Drive
+ubiquity container makes every sphere folder sync as a unit. Each device
+rebuilds its SwiftData index from the files it sees, which the storage
+design already requires. Details:
+
+- Sphere folders are written once; only `metadata.json` changes afterwards
+  (title, trip name, tags), so conflicts are rare and last-writer-wins on
+  that one file is acceptable. iCloud's conflict versions are discarded.
+- Source shots (`shots/`, roughly two-thirds of a sphere's size) sync too
+  by default so re-stitching works on either device. A setting can keep
+  them local-only.
+- The receiving device sees files arrive through `NSMetadataQuery` and
+  downloads them with `startDownloadingUbiquitousItem`; thumbnails are
+  fetched first so the library fills in before the full images land.
+- iCloud entitlements need the paid Apple Developer Program, which
+  decision 4 already schedules before M3.
+- Until sync ships, the fallback is AirDrop of a sphere folder as a bundle
+  and an "import" entry point, which is also the basis for F11.
+
+**What the iOS 27 baseline changes.** The concrete simplifications the
+higher baseline is known to allow, and the ones the local session should
+check in the SDK because they may have arrived after this document's
+author could verify them:
+
+- Known: Xcode 26 and later can build the app in Swift 6 language mode
+  with default main-actor isolation for the app module, which removes most
+  of the manual `@MainActor` and `Sendable` bookkeeping the scaffold
+  avoids by staying in Swift 5 mode. Proposed decision 15.
+- Known: `@Observable` view models instead of `ObservableObject` and
+  Combine, which simplifies `CaptureViewModel` and `CaptureSession`. No
+  minimum-OS change needed, but worth doing in the same pass.
+- Known: every MapKit, SwiftData and SwiftUI API through iOS 26 is
+  available without availability checks.
+- To check: whether the SwiftUI `Map` in the iOS 27 SDK supports
+  annotation clustering and custom annotation views. If it does, proposed
+  decision 9 (wrapped `MKMapView`) is reversed and the map is written in
+  SwiftUI. If not, decision 9 stands.
+- To check: whether ARKit in iOS 27 offers still capture with custom photo
+  settings (bracketing, RAW) from a running session, which would make F7's
+  bracketed option and F18's HDR capture cheap.
+- To check: whether Apple Maps offline downloads serve MapKit in
+  third-party apps on iOS 27; this decides how the map behaves off-grid.
+
 ## 7. Risks
 
 | Risk | Impact | Mitigation |
@@ -313,6 +400,9 @@ Showing other people's spheres.
 | Apple Maps trail detail in Hong Kong is thinner than OpenStreetMap | Harder to relate a pin to a trail | Elevation rendering and satellite toggle first; OSM tile overlay later if still needed, with its licensing handled before any public release |
 | Peaks dataset licensing (ODbL attribution) | Blocks a public release if ignored | Choose the source and record its attribution requirement when F22 or F12 starts |
 | GPS accuracy on a summit is usually good but can be tens of metres under tree cover | Pin lands off the viewpoint | Store and show horizontal accuracy; allow manual pin placement |
+| The iPad mini 6th generation is not on the iPadOS 27 support list | iPad scope cannot ship at the iOS 27 baseline | Verify on the device before M3; if unsupported, drop the baseline to the iPad's OS rather than drop the iPad |
+| Orientation lock lifted before the motion mapping is corrected | Viewer horizon wrong in landscape | Lift the lock in the same change that adds the interface-orientation correction, and test all four orientations on both devices |
+| iCloud sync of large folders is slow or stalls on a metered connection | iPad shows stale library | Thumbnails and metadata first; full image on demand; a visible sync state per sphere; Wi-Fi-only option |
 
 ## 8. Decisions record
 
@@ -320,12 +410,14 @@ Settled after v0.1 review.
 
 | # | Question | Decision |
 |---|---|---|
-| 1 | Capture device | iPhone 13 mini on iOS 27 (A15; fully supports ARKit world tracking and high-resolution frame capture). An iPhone 17 Pro is available for comparison, mainly useful for stitch-time and camera-quality checks. Minimum deployment target stays iOS 17. |
+| 1 | Capture device | iPhone 13 mini on iOS 27 (A15; fully supports ARKit world tracking and high-resolution frame capture). An iPhone 17 Pro is available for comparison, mainly useful for stitch-time and camera-quality checks. Minimum deployment target was iOS 17 in v0.1 to v0.3; raised to iOS 27 in v0.4 (decision 14). |
 | 2 | Keep source shots after a successful stitch? | Keep, with a per-sphere "delete sources" action and a setting to auto-delete (M3). |
 | 3 | Save the stitched image to the iOS Photos app automatically? | No. Explicit export only. |
-| 4 | Apple Developer account | Free for M1, paid before M3. |
+| 4 | Apple Developer account | Free for M1, paid before M3. iCloud sync (F17) is the first feature that cannot work on a free account. |
 | 5 | Build and test loop | Code is written in this repository; the owner builds and runs on a Mac mini M4 with Xcode and the phone connected. The core package's tests run with `swift test` on the Mac. |
 | 6 | Uncovered sky and ground in a cylindrical capture | Dark gradient, no pitch clamp. |
+| 14 | Minimum OS | iOS 27 and iPadOS 27. **Confirmed** in v0.4. The `SurroundCore` package keeps its lower platform floor because a library needs no minimum and the tools version that names iOS 27 is not required. |
+| 15 | iPad | In scope as a viewing and browsing device, with iCloud sync. **Confirmed** in v0.4. |
 
 ### 8.1 Proposed decisions for the map view
 
@@ -341,6 +433,10 @@ overridden.
 | 11 | Trips | Automatic by calendar day, renamable, replacing the manual trip tagging in the v0.2 wording of F9. Tags stay as optional free text. |
 | 12 | Manual pin placement for spheres without a position | Yes, by long press, flagged as manual in metadata. |
 | 13 | Peaks dataset source | OpenStreetMap extract, because it also has viewpoints and is easy to refresh; record the attribution. Decide when F22 or F12 starts, not now. |
+| 16 | Swift 6 language mode with default main-actor isolation for the app target | Yes, in a dedicated change once M1 builds and runs, not mixed with feature work. Move view models to `@Observable` in the same pass. |
+| 17 | Sync mechanism | iCloud Drive ubiquity container, not CloudKit through SwiftData. CloudKit forbids the unique constraint the index uses and would make the index, not the files, the source of truth. |
+| 18 | Capture on the iPad | Allowed but unsupported: no iPad-specific capture work, portrait only, same as the phone. |
+| 19 | iPhone landscape for the viewer | Yes, once the orientation correction in section 6.7 exists. |
 
 ## 9. Out of scope
 
@@ -348,4 +444,5 @@ overridden.
 - Video capture.
 - Editing tools beyond retake and delete.
 - Recording GPS tracks during a hike; routing, distance and elevation-gain statistics.
-- iPad and Mac.
+- Mac.
+- iPad-specific capture work.
