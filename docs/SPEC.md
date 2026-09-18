@@ -130,7 +130,7 @@ whole app is native Swift with SwiftUI. There is no framework split.
 | Library index | SwiftData | Native, minimal boilerplate |
 | Sync | iCloud Drive: the `spheres/` folder lives in the app's ubiquity container | Files are already the source of truth and each sphere is a self-contained folder, so file sync is the sync. No CloudKit schema constraints, no server code |
 | Map | MapKit through `MKMapView` (UIKit) wrapped for SwiftUI, not the SwiftUI `Map` view | `MKMapView` has annotation clustering, custom annotation views for the heading wedge and thumbnail, and overlays for the trip path; the SwiftUI `Map` on iOS 17 has none of these |
-| Stitching, M1 | Projection stitcher in `SurroundCore`: pure Swift, projects each still onto the sphere from its ARKit pose and intrinsics, feather-blends overlaps | No dependency, testable on any platform, and a direct check of whether the poses are good enough. Its seams are the baseline the next engine must beat |
+| Stitching, M1 | Projection stitcher in `SurroundCore`: pure Swift, projects each still onto the sphere from its ARKit pose and intrinsics. Before compositing, `RingRefinement` corrects each shot's yaw and pitch by correlating it with its neighbours (ring closed, front shot anchored), equalises exposure with a per-shot gain, and cuts each overlap along the seam where the two shots agree best, with a crossfade that widens in smooth areas such as sky and stays narrow over detail | No dependency, testable on any platform, and a direct check of whether the poses are good enough. Pose-only projection with a wide crossfade remains available as `StitchOptions.plain` for diagnosing captures |
 | Stitching, M2 onwards | OpenCV (official iOS xcframework) via a small Objective-C++ bridge, using its cylindrical and spherical warpers, exposure compensation, and multi-band blending, seeded with ARKit rotations as initial camera poses | The only mature, well-tested open stitching pipeline available on iOS. Seeding with known rotations makes it robust for low-texture sky and sea, which is where feature matching alone fails on a summit |
 
 Apple does not expose the built-in Camera app's panorama stitcher as an API,
@@ -388,7 +388,7 @@ author could verify them:
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Hand-held parallax causes seams on near objects (rocks, railings, your own feet) | Visible stitch errors | Guide the user to rotate about the camera, not their body; keep near objects out of frame; accept that M1 targets distant scenery. Multi-band blending hides most of it |
+| Hand-held parallax causes seams on near objects (rocks, railings, your own feet) | Visible stitch errors | Guide the user to rotate about the camera, not their body; keep near objects out of frame; accept that M1 targets distant scenery. The seam finder routes cuts around mismatches; a rotation-only alignment cannot remove them. On the first rooftop capture the camera drifted about half a metre around the ring and the pairwise yaw offsets summed to 15 degrees, all parallax |
 | Featureless sky and sea defeat feature matching | Stitch fails or warps | Seed OpenCV with ARKit poses; fall back to projection-only stitcher for those regions |
 | ARKit tracking degrades in bright, low-texture scenes | Wrong poses | Detect `limited` tracking state, show a warning, fall back to CoreMotion yaw with a magnetometer reference |
 | OpenCV binary size (roughly 20 to 40 MB) and build friction | Slower iteration | Acceptable for a personal app; revisit only before App Store release |

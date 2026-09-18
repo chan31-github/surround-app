@@ -32,7 +32,26 @@ swift test
 ```
 
 These cover the geometry, capture plan, alignment logic, projection stitcher,
-metadata and XMP code, and need no device.
+ring refinement (alignment, gain, seams), metadata and XMP code, and need no
+device. Set `SURROUND_DUMP=<dir>` to have the stitcher tests write their
+synthetic outputs as PPM files for eyeballing.
+
+## Re-stitching a capture on the Mac
+
+The shots and poses of every kept sphere sit in the app's Documents folder
+and can be copied off the phone without Xcode:
+
+```
+xcrun devicectl device copy from --device <udid> \
+  --domain-type appDataContainer --domain-identifier com.chan31.surround \
+  --source Documents --destination ./Documents
+```
+
+A few lines of macOS Swift that depend on `Packages/SurroundCore`, load each
+`NNN.jpg` with ImageIO, and call `ProjectionStitcher.stitch` on the poses in
+`capture.json` will reproduce the phone's output exactly, and
+`StitchResult.refinement` reports what the ring analysis measured per pair.
+That loop runs in under a second and is how the stitcher is tuned.
 
 ## First run checklist for M1
 
