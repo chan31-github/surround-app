@@ -77,6 +77,9 @@ public struct SphereMetadata: Codable, Equatable, Sendable {
     public var longitude: Double?
     public var altitudeMetres: Double?
     public var horizontalAccuracyMetres: Double?
+    /// True when the user placed the sphere on the map by hand rather than
+    /// the position coming from GPS at capture.
+    public var isManualPosition: Bool = false
     /// Compass heading of the sphere's front (image centre), degrees from true north.
     public var frontHeadingDegrees: Double?
     public var coveredPitchMinDegrees: Float?
@@ -106,6 +109,33 @@ public struct SphereMetadata: Codable, Equatable, Sendable {
         self.stitcher = stitcher
         self.stitcherVersion = stitcherVersion
         self.shotCount = shotCount
+    }
+
+    /// Fields added after a file was written, and fields with defaults, are
+    /// optional when decoding so older metadata files keep loading.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try c.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 1
+        id = try c.decode(UUID.self, forKey: .id)
+        capturedAt = try c.decode(Date.self, forKey: .capturedAt)
+        latitude = try c.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try c.decodeIfPresent(Double.self, forKey: .longitude)
+        altitudeMetres = try c.decodeIfPresent(Double.self, forKey: .altitudeMetres)
+        horizontalAccuracyMetres = try c.decodeIfPresent(Double.self, forKey: .horizontalAccuracyMetres)
+        isManualPosition = try c.decodeIfPresent(Bool.self, forKey: .isManualPosition) ?? false
+        frontHeadingDegrees = try c.decodeIfPresent(Double.self, forKey: .frontHeadingDegrees)
+        coveredPitchMinDegrees = try c.decodeIfPresent(Float.self, forKey: .coveredPitchMinDegrees)
+        coveredPitchMaxDegrees = try c.decodeIfPresent(Float.self, forKey: .coveredPitchMaxDegrees)
+        projection = try c.decodeIfPresent(String.self, forKey: .projection) ?? "equirectangular"
+        widthPx = try c.decode(Int.self, forKey: .widthPx)
+        heightPx = try c.decode(Int.self, forKey: .heightPx)
+        stitcher = try c.decode(String.self, forKey: .stitcher)
+        stitcherVersion = try c.decode(String.self, forKey: .stitcherVersion)
+        deviceModel = try c.decodeIfPresent(String.self, forKey: .deviceModel)
+        shotCount = try c.decode(Int.self, forKey: .shotCount)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+        notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
     }
 }
 

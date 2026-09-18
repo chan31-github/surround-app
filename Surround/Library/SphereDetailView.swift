@@ -78,10 +78,36 @@ struct SphereDetailView: View {
 
 private struct SphereInfoView: View {
     let sphere: SphereRecord
+    // Optional: the review screen has no library behind it.
+    @Environment(LibraryNavigation.self) private var navigation: LibraryNavigation?
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    if let lat = sphere.latitude, let lon = sphere.longitude {
+                        Button {
+                            dismiss()
+                            navigation?.showOnMap(sphere.id)
+                        } label: {
+                            SphereMapSnippet(id: sphere.id, latitude: lat, longitude: lon, headingDegrees: sphere.frontHeadingDegrees)
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets())
+                        .disabled(navigation == nil)
+                        .accessibilityLabel("Show on map")
+                        if sphere.isManualPosition {
+                            Label("Position placed by hand", systemImage: "hand.point.up.left")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Label("No position recorded. Long-press the map to place this sphere.", systemImage: "mappin.slash")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 LabeledContent("Captured", value: sphere.capturedAt.formatted(date: .long, time: .shortened))
                 LabeledContent("Shots", value: "\(sphere.shotCount)")
                 if let lat = sphere.latitude, let lon = sphere.longitude {

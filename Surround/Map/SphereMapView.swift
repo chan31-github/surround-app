@@ -16,19 +16,37 @@ struct MapSphere: Identifiable, Equatable {
     let tripName: String
 }
 
+/// The spheres of one trip in capture order, joined by a thin line (F23).
+struct MapPath: Identifiable, Equatable {
+    let id: String
+    let coordinates: [[Double]]   // [latitude, longitude] pairs
+}
+
+/// A request to centre the map on one sphere and open its callout. The
+/// token makes repeated requests for the same sphere distinct.
+struct MapFocus: Equatable {
+    let id: UUID
+    let token: UUID
+}
+
 /// The library as a map: one pin per sphere, clustered when they crowd, with
 /// a wedge showing which way the sphere's front faces (F20, F21). Wrapped
 /// `MKMapView` rather than the SwiftUI `Map`, which has no clustering or
 /// custom annotation views (spec decision 9).
 struct SphereMapView: UIViewRepresentable {
     var spheres: [MapSphere]
+    var paths: [MapPath] = []
     var satellite: Bool
+    /// Where a long press landed while the placement sheet is up.
+    var pendingDrop: CLLocationCoordinate2D?
+    var focus: MapFocus?
     var onOpen: (UUID) -> Void
     /// A cluster whose members cannot be told apart by zooming.
     var onSelectCluster: ([UUID]) -> Void
+    var onLongPress: (CLLocationCoordinate2D) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onOpen: onOpen, onSelectCluster: onSelectCluster)
+        Coordinator(onOpen: onOpen, onSelectCluster: onSelectCluster, onLongPress: onLongPress)
     }
 
     func makeUIView(context: Context) -> MKMapView {
@@ -41,6 +59,10 @@ struct SphereMapView: UIViewRepresentable {
         map.showsScale = true
         map.register(SphereAnnotationView.self, forAnnotationViewWithReuseIdentifier: SphereAnnotationView.reuseIdentifier)
         map.register(ClusterAnnotationView.self, forAnnotationViewWithReuseIdentifier: MKMapViewDefaultClusterAnnotationViewReuseIdentifier)
+        map.register(MKMarkerAnnotationView.self, forAnnotationViewWithReuseIdentifier: Coordinator.dropReuseIdentifier)
+        let longPress = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.5
+        map.addGestureRecognizer(longPress)
 
         // The locate-me button relies on the permission capture already asked for.
         let status = CLLocationManager().authorizationStatus
@@ -66,6 +88,7 @@ struct SphereMapView: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.onOpen = onOpen
         coordinator.onSelectCluster = onSelectCluster
+        coordinator.onLongPress = onLongPress
         if coordinator.satellite != satellite {
             coordinator.satellite = satellite
             map.preferredConfiguration = satellite
@@ -73,19 +96,86 @@ struct SphereMapView: UIViewRepresentable {
                 : MKStandardMapConfiguration(elevationStyle: .realistic)
         }
         coordinator.sync(spheres, in: map)
+        coordinator.sync(paths, in: map)
+        coordinator.sync(pendingDrop: pendingDrop, in: map)
+        coordinator.apply(focus, in: map)
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
+        static let dropReuseIdentifier = "drop"
+
         var onOpen: (UUID) -> Void
         var onSelectCluster: ([UUID]) -> Void
+        var onLongPress: (CLLocationCoordinate2D) -> Void
         var hasFitted = false
         var satellite: Bool?
         private var annotations: [UUID: SphereAnnotation] = [:]
         private var thumbnails: [UUID: (pin: UIImage, callout: UIImage)] = [:]
+        private var polylines: [String: (path: MapPath, line: MKPolyline)] = [:]
+        private var dropAnnotation: MKPointAnnotation?
+        private var appliedFocus: UUID?
+        private var pendingSelection: UUID?
 
-        init(onOpen: @escaping (UUID) -> Void, onSelectCluster: @escaping ([UUID]) -> Void) {
+        init(onOpen: @escaping (UUID) -> Void,
+             onSelectCluster: @escaping ([UUID]) -> Void,
+             onLongPress: @escaping (CLLocationCoordinate2D) -> Void) {
             self.onOpen = onOpen
             self.onSelectCluster = onSelectCluster
+            self.onLongPress = onLongPress
+        }
+
+        @objc func handleLongPress(_ g: UILongPressGestureRecognizer) {
+            guard g.state == .began, let map = g.view as? MKMapView else { return }
+            onLongPress(map.convert(g.location(in: map), toCoordinateFrom: map))
+        }
+
+        func sync(_ paths: [MapPath], in map: MKMapView) {
+            var stale = polylines
+            for path in paths {
+                if let existing = stale.removeValue(forKey: path.id), existing.path == path { continue }
+                if let old = polylines[path.id] { map.removeOverlay(old.line) }
+                let coords = path.coordinates.map { CLLocationCoordinate2D(latitude: $0[0], longitude: $0[1]) }
+                let line = MKPolyline(coordinates: coords, count: coords.count)
+                polylines[path.id] = (path, line)
+                map.addOverlay(line, level: .aboveRoads)
+            }
+            for (id, entry) in stale where polylines[id]?.path == entry.path {
+                map.removeOverlay(entry.line)
+                polylines[id] = nil
+            }
+        }
+
+        func sync(pendingDrop: CLLocationCoordinate2D?, in map: MKMapView) {
+            if let pendingDrop {
+                if let existing = dropAnnotation {
+                    existing.coordinate = pendingDrop
+                } else {
+                    let marker = MKPointAnnotation()
+                    marker.coordinate = pendingDrop
+                    marker.title = "Place a sphere here"
+                    dropAnnotation = marker
+                    map.addAnnotation(marker)
+                }
+            } else if let existing = dropAnnotation {
+                map.removeAnnotation(existing)
+                dropAnnotation = nil
+            }
+        }
+
+        /// Centres on the sphere close enough to separate it from neighbours a
+        /// street away, then opens its callout once MapKit has given it a view.
+        /// Spheres at the very same spot stay clustered; the cluster's sheet
+        /// covers that case.
+        func apply(_ focus: MapFocus?, in map: MKMapView) {
+            guard let focus, focus.token != appliedFocus, let annotation = annotations[focus.id] else { return }
+            appliedFocus = focus.token
+            hasFitted = true
+            map.setRegion(MKCoordinateRegion(center: annotation.coordinate, latitudinalMeters: 300, longitudinalMeters: 300), animated: false)
+            pendingSelection = annotation.id
+            if map.view(for: annotation) != nil {
+                pendingSelection = nil
+                map.selectAnnotation(annotation, animated: true)
+            }
         }
 
         /// Adds, updates and removes annotations so the map matches `spheres`.
@@ -142,6 +232,13 @@ struct SphereMapView: UIViewRepresentable {
         // MARK: MKMapViewDelegate
 
         func mapView(_ mapView: MKMapView, viewFor annotation: any MKAnnotation) -> MKAnnotationView? {
+            if annotation === dropAnnotation {
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: Self.dropReuseIdentifier, for: annotation)
+                (view as? MKMarkerAnnotationView)?.markerTintColor = .systemOrange
+                (view as? MKMarkerAnnotationView)?.glyphImage = UIImage(systemName: "mappin")
+                view.canShowCallout = false
+                return view
+            }
             if let cluster = annotation as? MKClusterAnnotation {
                 let view = mapView.dequeueReusableAnnotationView(withIdentifier: MKMapViewDefaultClusterAnnotationViewReuseIdentifier, for: cluster)
                 (view as? ClusterAnnotationView)?.configure(cluster)
@@ -162,6 +259,17 @@ struct SphereMapView: UIViewRepresentable {
             cluster.title = "\(spheres.count) spheres"
             cluster.subtitle = trips.count == 1 ? spheres.first?.tripName : nil
             return cluster
+        }
+
+        func mapView(_ mapView: MKMapView, didAdd views: [MKAnnotationView]) {
+            guard let pending = pendingSelection else { return }
+            for view in views {
+                if let sphere = view.annotation as? SphereAnnotation, sphere.id == pending {
+                    pendingSelection = nil
+                    mapView.selectAnnotation(sphere, animated: true)
+                    return
+                }
+            }
         }
 
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
@@ -208,6 +316,15 @@ struct SphereMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             MapRegionStore.save(mapView.region)
+        }
+
+        func mapView(_ mapView: MKMapView, rendererFor overlay: any MKOverlay) -> MKOverlayRenderer {
+            guard let line = overlay as? MKPolyline else { return MKOverlayRenderer(overlay: overlay) }
+            let renderer = MKPolylineRenderer(polyline: line)
+            renderer.strokeColor = UIColor.systemBlue.withAlphaComponent(0.55)
+            renderer.lineWidth = 2
+            renderer.lineDashPattern = [6, 4]
+            return renderer
         }
     }
 }

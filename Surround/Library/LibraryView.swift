@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftData
 import SwiftUI
 import SurroundCore
@@ -8,6 +9,14 @@ enum LibraryMode: String {
     case map
 }
 
+/// What the list and the map show: everything, one trip, or the spheres
+/// that still need a position (spec 6.6, "unplaced").
+enum LibraryFilter: Hashable {
+    case all
+    case trip(String)
+    case unplaced
+}
+
 /// The library as a grid or a map, with one trip filter shared by both
 /// (spec 6.6: the map is a toggle in the library, not a separate tab).
 struct LibraryView: View {
@@ -16,12 +25,16 @@ struct LibraryView: View {
     @Query private var tripNames: [TripRecord]
     @AppStorage("library.mode") private var modeRaw = LibraryMode.list.rawValue
     @AppStorage("library.satellite") private var satellite = false
-    @State private var selectedTrip: String?
+    @State private var filter: LibraryFilter = .all
     @State private var path = NavigationPath()
     @State private var showCapture = false
     @State private var renamingTrip: String?
     @State private var renameText = ""
     @State private var clusterSelection: ClusterSelection?
+    @State private var placement: PlacementRequest?
+    @State private var placementError: String?
+    @State private var navigation = LibraryNavigation()
+    @State private var mapFocus: MapFocus?
 
     private var mode: Binding<LibraryMode> {
         Binding(get: { LibraryMode(rawValue: modeRaw) ?? .list }, set: { modeRaw = $0.rawValue })
@@ -30,7 +43,7 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack(path: $path) {
             content
-                .navigationTitle(selectedTrip.map(tripName) ?? "Surround")
+                .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .navigationDestination(for: SphereRecord.self) { sphere in
                     SphereDetailView(sphere: sphere)
@@ -61,6 +74,30 @@ struct LibraryView: View {
                 .task {
                     SphereStore.reconcileIndex(in: context)
                 }
+                .onChange(of: navigation.focus) { _, focus in
+                    guard let focus else { return }
+                    Task {
+                        // Let the info sheet finish dismissing before the stack pops.
+                        try? await Task.sleep(for: .milliseconds(350))
+                        path = NavigationPath()
+                        if case .unplaced = filter { filter = .all }
+                        modeRaw = LibraryMode.map.rawValue
+                        mapFocus = focus
+                    }
+                }
+                .sheet(item: $placement) { request in
+                    PlacementSheet(request: request,
+                                   candidates: placementCandidates,
+                                   tripName: tripName) { sphere in
+                        place(sphere, at: request)
+                    }
+                    .presentationDetents([.medium, .large])
+                }
+                .alert("Could not save the position", isPresented: Binding(get: { placementError != nil }, set: { if !$0 { placementError = nil } })) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(placementError ?? "")
+                }
                 .sheet(item: $clusterSelection) { selection in
                     ClusterListView(spheres: selection.spheres, tripName: tripName) { sphere in
                         clusterSelection = nil
@@ -76,9 +113,23 @@ struct LibraryView: View {
                     Text("Leave the name empty to show the date again.")
                 }
         }
+        // On the stack itself so pushed screens and their sheets see it too.
+        .environment(navigation)
     }
 
-    // MARK: Trips
+    // MARK: Filter and trips
+
+    private var title: String {
+        switch filter {
+        case .all: return "Surround"
+        case .trip(let day): return tripName(day)
+        case .unplaced: return "Without a position"
+        }
+    }
+
+    private var unplacedSpheres: [SphereRecord] {
+        spheres.filter { $0.latitude == nil || $0.longitude == nil }
+    }
 
     /// Day keys of every trip, newest first.
     private var tripDays: [String] {
@@ -98,29 +149,55 @@ struct LibraryView: View {
     }
 
     private var filtered: [SphereRecord] {
-        guard let selectedTrip else { return spheres }
-        return spheres.filter { TripDay.key(for: $0.capturedAt) == selectedTrip }
+        switch filter {
+        case .all: return spheres
+        case .trip(let day): return spheres.filter { TripDay.key(for: $0.capturedAt) == day }
+        case .unplaced: return unplacedSpheres
+        }
     }
 
     private var tripMenu: some View {
         Menu {
-            Picker("Trip", selection: $selectedTrip) {
-                Text("All spheres").tag(String?.none)
-                ForEach(tripDays, id: \.self) { day in
-                    Text(tripName(day)).tag(String?.some(day))
+            Picker("Filter", selection: $filter) {
+                Text("All spheres").tag(LibraryFilter.all)
+                if !unplacedSpheres.isEmpty {
+                    Text("Without a position (\(unplacedSpheres.count))").tag(LibraryFilter.unplaced)
                 }
             }
-            if let selectedTrip {
+            Picker("Trip", selection: $filter) {
+                ForEach(tripDays, id: \.self) { day in
+                    Text(tripName(day)).tag(LibraryFilter.trip(day))
+                }
+            }
+            if case .trip(let day) = filter {
                 Divider()
                 Button("Rename trip", systemImage: "pencil") {
-                    renameText = tripNames.first(where: { $0.dayKey == selectedTrip })?.name ?? ""
-                    renamingTrip = selectedTrip
+                    renameText = tripNames.first(where: { $0.dayKey == day })?.name ?? ""
+                    renamingTrip = day
                 }
             }
         } label: {
-            Label("Trips", systemImage: selectedTrip == nil ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+            Label("Filter", systemImage: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
         .disabled(spheres.isEmpty)
+    }
+
+    // MARK: Placement
+
+    /// Spheres a long press can place: those without a position, and those
+    /// placed by hand before, so a wrong guess can be corrected.
+    private var placementCandidates: [SphereRecord] {
+        spheres.filter { $0.latitude == nil || $0.longitude == nil || $0.isManualPosition }
+    }
+
+    private func place(_ sphere: SphereRecord, at request: PlacementRequest) {
+        do {
+            try sphere.setManualPosition(latitude: request.latitude, longitude: request.longitude)
+            placement = nil
+            if case .unplaced = filter, unplacedSpheres.isEmpty { filter = .all }
+        } catch {
+            placementError = error.localizedDescription
+        }
     }
 
     private func saveRename() {
@@ -177,16 +254,26 @@ struct LibraryView: View {
     private var mapContent: some View {
         let placed = filtered.compactMap(mapSphere)
         let unplaced = filtered.count - placed.count
-        return SphereMapView(spheres: placed, satellite: satellite, onOpen: { id in
-            if let sphere = spheres.first(where: { $0.id == id }) {
-                path.append(sphere)
-            }
-        }, onSelectCluster: { ids in
-            let members = spheres.filter { ids.contains($0.id) }
-            if !members.isEmpty {
-                clusterSelection = ClusterSelection(spheres: members)
-            }
-        })
+        return SphereMapView(spheres: placed,
+                             paths: tripPaths,
+                             satellite: satellite,
+                             pendingDrop: placement.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) },
+                             focus: mapFocus,
+                             onOpen: { id in
+                                 if let sphere = spheres.first(where: { $0.id == id }) {
+                                     path.append(sphere)
+                                 }
+                             },
+                             onSelectCluster: { ids in
+                                 let members = spheres.filter { ids.contains($0.id) }
+                                 if !members.isEmpty {
+                                     clusterSelection = ClusterSelection(spheres: members)
+                                 }
+                             },
+                             onLongPress: { coordinate in
+                                 guard !placementCandidates.isEmpty else { return }
+                                 placement = PlacementRequest(latitude: coordinate.latitude, longitude: coordinate.longitude)
+                             })
         .ignoresSafeArea(edges: .bottom)
         .overlay(alignment: .topTrailing) {
             Button {
@@ -201,15 +288,42 @@ struct LibraryView: View {
             .padding(12)
         }
         .overlay(alignment: .top) {
-            if unplaced > 0 {
-                Text(unplaced == 1 ? "1 sphere has no position" : "\(unplaced) spheres have no position")
+            if case .unplaced = filter {
+                Text("Long-press the map where a sphere was taken to place it.")
                     .font(.footnote)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
                     .background(.regularMaterial, in: Capsule())
                     .padding(.top, 12)
+                    .padding(.horizontal, 60)
+            } else if unplaced > 0 {
+                Button {
+                    filter = .unplaced
+                } label: {
+                    Text(unplaced == 1 ? "1 sphere has no position" : "\(unplaced) spheres have no position")
+                        .font(.footnote)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(.regularMaterial, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 12)
             }
         }
+    }
+
+    /// One dashed line per trip in the current filter, through its placed
+    /// spheres in capture order, when there are at least two.
+    private var tripPaths: [MapPath] {
+        let placed = filtered.filter { $0.latitude != nil && $0.longitude != nil }
+        let byTrip = Dictionary(grouping: placed) { TripDay.key(for: $0.capturedAt) }
+        return byTrip.compactMap { day, members -> MapPath? in
+            guard members.count >= 2 else { return nil }
+            let ordered = members.sorted { $0.capturedAt < $1.capturedAt }
+            return MapPath(id: day, coordinates: ordered.map { [$0.latitude!, $0.longitude!] })
+        }
+        .sorted { $0.id < $1.id }
     }
 
     private func mapSphere(_ sphere: SphereRecord) -> MapSphere? {
@@ -266,6 +380,81 @@ private struct SphereCard: View {
 struct ClusterSelection: Identifiable {
     let id = UUID()
     let spheres: [SphereRecord]
+}
+
+/// Where a long press landed, waiting for the user to say which sphere goes there.
+struct PlacementRequest: Identifiable {
+    let id = UUID()
+    let latitude: Double
+    let longitude: Double
+}
+
+/// Picks the sphere to place at a long-pressed spot (spec 6.6, manual pins).
+private struct PlacementSheet: View {
+    let request: PlacementRequest
+    let candidates: [SphereRecord]
+    let tripName: (String) -> String
+    let onPlace: (SphereRecord) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var unplaced: [SphereRecord] { candidates.filter { $0.latitude == nil || $0.longitude == nil } }
+    private var movable: [SphereRecord] { candidates.filter { $0.latitude != nil && $0.longitude != nil } }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !unplaced.isEmpty {
+                    Section("Place here") {
+                        ForEach(unplaced) { sphere in
+                            row(sphere)
+                        }
+                    }
+                }
+                if !movable.isEmpty {
+                    Section("Move here (placed by hand before)") {
+                        ForEach(movable) { sphere in
+                            row(sphere)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Place a sphere")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func row(_ sphere: SphereRecord) -> some View {
+        Button {
+            onPlace(sphere)
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    Color.secondary.opacity(0.2)
+                    if let thumb = UIImage(contentsOfFile: SphereStore.files(for: sphere.id).thumbnail.path) {
+                        Image(uiImage: thumb)
+                            .resizable()
+                            .scaledToFill()
+                    }
+                }
+                .frame(width: 88, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(sphere.title.isEmpty ? sphere.capturedAt.formatted(date: .abbreviated, time: .shortened) : sphere.title)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                    Text(tripName(TripDay.key(for: sphere.capturedAt)))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 /// Picker for spheres that share a spot: what the map shows when zooming in

@@ -98,4 +98,25 @@ final class NonFiniteMetadataTests: XCTestCase {
         XCTAssertFalse(pose(exposureOffset: nil, transform: [1, 2, 3]).hasFiniteGeometry)
         XCTAssertTrue(pose(exposureOffset: nil, transform: identityTransform).hasFiniteGeometry)
     }
+
+    func testSphereMetadataDecodesFilesWrittenBeforeNewFields() throws {
+        // A v0.1 metadata file: no isManualPosition, no title/tags/notes.
+        let json = """
+        {"id":"345BB39A-25DA-4609-AA44-34064D2AB4FC","capturedAt":"2026-09-18T08:11:09Z",
+         "latitude":22.48,"longitude":114.157,"widthPx":4096,"heightPx":2048,
+         "stitcher":"projection","stitcherVersion":"0.1","shotCount":12}
+        """
+        let meta = try MetadataCoding.decode(SphereMetadata.self, from: Data(json.utf8))
+        XCTAssertFalse(meta.isManualPosition)
+        XCTAssertEqual(meta.projection, "equirectangular")
+        XCTAssertEqual(meta.title, "")
+        XCTAssertEqual(meta.tags, [])
+        XCTAssertEqual(meta.latitude, 22.48)
+
+        var placed = meta
+        placed.isManualPosition = true
+        let again = try MetadataCoding.decode(SphereMetadata.self, from: MetadataCoding.encode(placed))
+        XCTAssertTrue(again.isManualPosition)
+        XCTAssertEqual(again, placed)
+    }
 }

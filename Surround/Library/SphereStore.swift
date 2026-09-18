@@ -95,6 +95,13 @@ nonisolated enum SphereStore {
         try MetadataCoding.decode(SphereMetadata.self, from: Data(contentsOf: files(for: id).metadata))
     }
 
+    /// Reads, changes and rewrites a sphere's metadata file atomically.
+    static func updateMetadata(id: UUID, _ change: (inout SphereMetadata) -> Void) throws {
+        var meta = try loadMetadata(id: id)
+        change(&meta)
+        try MetadataCoding.encode(meta).write(to: files(for: id).metadata, options: .atomic)
+    }
+
     static func delete(id: UUID) {
         try? FileManager.default.removeItem(at: files(for: id).directory)
     }
