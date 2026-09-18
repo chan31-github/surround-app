@@ -36,6 +36,15 @@ public struct ShotPose: Codable, Equatable {
         CameraPose(rotation: Mat3(columnMajor4x4: transformColumnMajor))
     }
 
+    /// False when the transform or intrinsics contain NaN or infinity, which
+    /// ARKit can deliver while tracking is not established.
+    public var hasFiniteGeometry: Bool {
+        transformColumnMajor.count == 16
+            && transformColumnMajor.allSatisfy { $0.isFinite }
+            && [intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy].allSatisfy { $0.isFinite }
+            && intrinsics.fx > 0 && intrinsics.fy > 0
+    }
+
     public var imageFileName: String { String(format: "%03d.jpg", index) }
     public var poseFileName: String { String(format: "%03d.json", index) }
 }
@@ -101,16 +110,21 @@ public struct SphereMetadata: Codable, Equatable {
 }
 
 public enum MetadataCoding {
+    /// JSON has no NaN or infinity; encoding one throws "The data couldn't be
+    /// written because it isn't in the correct format". Sensor values can be
+    /// non-finite, so they are written as strings instead of failing the save.
     public static func encoder() -> JSONEncoder {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .iso8601
         e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        e.nonConformingFloatEncodingStrategy = .convertToString(positiveInfinity: "inf", negativeInfinity: "-inf", nan: "nan")
         return e
     }
 
     public static func decoder() -> JSONDecoder {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
+        d.nonConformingFloatDecodingStrategy = .convertFromString(positiveInfinity: "inf", negativeInfinity: "-inf", nan: "nan")
         return d
     }
 

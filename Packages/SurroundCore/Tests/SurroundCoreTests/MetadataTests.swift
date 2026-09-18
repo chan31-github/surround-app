@@ -68,3 +68,34 @@ final class MetadataTests: XCTestCase {
         XCTAssertNil(JPEGXMPEmbedder.embed(packet, in: Data([0x00, 0x01, 0x02, 0x03])))
     }
 }
+
+final class NonFiniteMetadataTests: XCTestCase {
+    private func pose(exposureOffset: Float?, transform: [Float]) -> ShotPose {
+        ShotPose(index: 0, timestamp: 0, transformColumnMajor: transform,
+                 intrinsics: CameraIntrinsics(fx: 3000, fy: 3000, cx: 2016, cy: 1512, width: 4032, height: 3024),
+                 exposureOffset: exposureOffset)
+    }
+
+    private var identityTransform: [Float] {
+        var t = [Float](repeating: 0, count: 16)
+        t[0] = 1; t[5] = 1; t[10] = 1; t[15] = 1
+        return t
+    }
+
+    func testNaNExposureOffsetStillEncodes() throws {
+        let p = pose(exposureOffset: .nan, transform: identityTransform)
+        let data = try MetadataCoding.encode(p)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"nan\""))
+        let back = try MetadataCoding.decode(ShotPose.self, from: data)
+        XCTAssertTrue(back.exposureOffset?.isNaN ?? false)
+        XCTAssertTrue(back.hasFiniteGeometry)
+    }
+
+    func testNonFiniteTransformIsDetected() {
+        var t = identityTransform
+        t[3] = .infinity
+        XCTAssertFalse(pose(exposureOffset: nil, transform: t).hasFiniteGeometry)
+        XCTAssertFalse(pose(exposureOffset: nil, transform: [1, 2, 3]).hasFiniteGeometry)
+        XCTAssertTrue(pose(exposureOffset: nil, transform: identityTransform).hasFiniteGeometry)
+    }
+}

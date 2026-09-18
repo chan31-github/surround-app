@@ -181,14 +181,23 @@ final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
         if intrinsics.width != width || intrinsics.height != height {
             intrinsics = intrinsics.scaled(toWidth: width, height: height)
         }
+        // Exposure values are informational; ARKit can report NaN for them.
+        let exposureDuration = frame.exposureDuration.isFinite ? frame.exposureDuration : nil
+        let exposureOffset = frame.exposureOffset.isFinite ? frame.exposureOffset : nil
         let pose = ShotPose(index: index,
                             timestamp: frame.timestamp,
                             transformColumnMajor: Self.columnMajor(frame.camera.transform),
                             intrinsics: intrinsics,
-                            exposureDurationSeconds: frame.exposureDuration,
-                            exposureOffset: frame.exposureOffset,
+                            exposureDurationSeconds: exposureDuration,
+                            exposureOffset: exposureOffset,
                             targetYawDegrees: target.yawDegrees,
                             targetPitchDegrees: target.pitchDegrees)
+        guard pose.hasFiniteGeometry else {
+            // Tracking delivered an unusable pose; leave the target in place so it is retried.
+            isCapturingFrame = false
+            trackingWarning = "Tracking not ready, hold still"
+            return
+        }
         let imageURL = directory.appendingPathComponent(pose.imageFileName)
         let poseURL = directory.appendingPathComponent(pose.poseFileName)
 
@@ -198,12 +207,19 @@ final class CaptureSession: NSObject, ObservableObject, ARSessionDelegate {
             if let data = ImageConversion.jpegData(from: buffer) {
                 do {
                     try data.write(to: imageURL, options: .atomic)
-                    try MetadataCoding.encode(pose).write(to: poseURL, options: .atomic)
                 } catch {
-                    failure = error.localizedDescription
+                    failure = "Saving image for shot \(index + 1): \(error.localizedDescription)"
+                }
+                if failure == nil {
+                    do {
+                        let json = try MetadataCoding.encode(pose)
+                        try json.write(to: poseURL, options: .atomic)
+                    } catch {
+                        failure = "Saving pose for shot \(index + 1): \(error.localizedDescription)"
+                    }
                 }
             } else {
-                failure = "Could not encode shot \(index + 1)."
+                failure = "Could not encode the image for shot \(index + 1)."
             }
             DispatchQueue.main.async {
                 self?.finishStoring(CapturedShot(fileURL: imageURL, pose: pose), failure: failure)

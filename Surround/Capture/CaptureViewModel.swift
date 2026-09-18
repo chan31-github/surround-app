@@ -104,10 +104,19 @@ final class CaptureViewModel: ObservableObject {
             Task { @MainActor in self?.stage = .stitching(fraction) }
         }
         do {
-            try MetadataCoding.encode(manifest).write(to: files.manifest, options: .atomic)
-            let result = try await Task.detached(priority: .userInitiated) {
-                try stitcher.stitch(job: job, progress: report)
-            }.value
+            do {
+                try MetadataCoding.encode(manifest).write(to: files.manifest, options: .atomic)
+            } catch {
+                throw CaptureError.step("Saving capture manifest", error)
+            }
+            let result: StitchResult
+            do {
+                result = try await Task.detached(priority: .userInitiated) {
+                    try stitcher.stitch(job: job, progress: report)
+                }.value
+            } catch {
+                throw CaptureError.step("Stitching", error)
+            }
 
             var meta = SphereMetadata(id: sphereID,
                                       capturedAt: manifest.startedAt,
@@ -127,11 +136,26 @@ final class CaptureViewModel: ObservableObject {
             meta.coveredPitchMaxDegrees = result.coveredPitchRangeDegrees?.upperBound
             meta.deviceModel = DeviceInfo.machineIdentifier
 
-            reviewImage = try SphereStore.save(image: result.image, metadata: meta, to: files)
+            do {
+                reviewImage = try SphereStore.save(image: result.image, metadata: meta, to: files)
+            } catch {
+                throw CaptureError.step("Saving sphere", error)
+            }
             metadata = meta
             stage = .review
         } catch {
             stage = .failed(error.localizedDescription)
+        }
+    }
+}
+
+enum CaptureError: LocalizedError {
+    case step(String, Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .step(let name, let underlying):
+            return "\(name): \(underlying.localizedDescription)"
         }
     }
 }
