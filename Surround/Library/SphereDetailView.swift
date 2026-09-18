@@ -81,10 +81,71 @@ private struct SphereInfoView: View {
     // Optional: the review screen has no library behind it.
     @Environment(LibraryNavigation.self) private var navigation: LibraryNavigation?
     @Environment(\.dismiss) private var dismiss
+    @Query private var allSpheres: [SphereRecord]
+    @State private var title: String
+    @State private var tagsText: String
+    @State private var saveError: String?
+
+    init(sphere: SphereRecord) {
+        self.sphere = sphere
+        _title = State(initialValue: sphere.title)
+        _tagsText = State(initialValue: sphere.tags.joined(separator: ", "))
+    }
+
+    /// Tags used anywhere in the library that this sphere does not have yet.
+    private var suggestedTags: [String] {
+        let current = Set(currentTags.map { $0.lowercased() })
+        var counts: [String: Int] = [:]
+        for s in allSpheres { for t in s.tags { counts[t, default: 0] += 1 } }
+        return counts.keys
+            .filter { !current.contains($0.lowercased()) }
+            .sorted { (counts[$0]!, $1) > (counts[$1]!, $0) }
+            .prefix(8)
+            .map { $0 }
+    }
+
+    private var currentTags: [String] {
+        tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    private func save() {
+        do {
+            try sphere.setTitle(title)
+            try sphere.setTags(currentTags)
+        } catch {
+            saveError = error.localizedDescription
+        }
+    }
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    TextField("Name this sphere", text: $title)
+                        .submitLabel(.done)
+                        .onSubmit(save)
+                    TextField("Tags, separated by commas", text: $tagsText)
+                        .textInputAutocapitalization(.never)
+                        .submitLabel(.done)
+                        .onSubmit(save)
+                    if !suggestedTags.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(suggestedTags, id: \.self) { tag in
+                                    Button(tag) {
+                                        tagsText = (currentTags + [tag]).joined(separator: ", ")
+                                        save()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    }
+                } footer: {
+                    Text("Search finds spheres by title, tag and trip name.")
+                }
                 Section {
                     if let lat = sphere.latitude, let lon = sphere.longitude {
                         Button {
@@ -123,12 +184,15 @@ private struct SphereInfoView: View {
                     LabeledContent("Covered pitch", value: String(format: "%.0f° to %.0f°", lo, hi))
                 }
                 LabeledContent("Size", value: ByteCountFormatter.string(fromByteCount: Int64(sphere.fileSizeBytes), countStyle: .file))
-                if !sphere.tags.isEmpty {
-                    LabeledContent("Tags", value: sphere.tags.joined(separator: ", "))
-                }
             }
             .navigationTitle("Details")
             .navigationBarTitleDisplayMode(.inline)
+            .onDisappear(perform: save)
+            .alert("Could not save", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(saveError ?? "")
+            }
         }
     }
 }

@@ -253,8 +253,11 @@ also reduces how much manual tagging F9 needs: place comes from the map,
 day comes from the automatic trip, and tags become optional.
 
 **Where it lives.** The library screen gets a list/map toggle in its
-toolbar rather than a separate tab, so both views share the same trip and
-tag filters and the same selection. The detail view's info sheet gets a
+toolbar rather than a separate tab, so both views share the same trip
+filter, the same search (title, tags, trip name) and the same selection.
+The list is sectioned by trip with sticky headers; a Trips screen lists
+every trip by year with counts, since a popup menu stops working past a
+few dozen trips. The detail view's info sheet gets a
 small static map snippet (`MKMapSnapshotter`, rendered once and cached)
 showing the pin and heading wedge; tapping it opens the full map centred
 there.

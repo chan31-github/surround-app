@@ -96,6 +96,10 @@ nonisolated enum SphereStore {
     @MainActor
     static func reconcileIndex(in context: ModelContext) async {
         let records = (try? context.fetch(FetchDescriptor<SphereRecord>())) ?? []
+        // Rows written before the trip key existed get it now.
+        for record in records where record.tripDayKey.isEmpty {
+            record.tripDayKey = TripDay.key(for: record.capturedAt)
+        }
         let scan = await scanFolders(indexed: Set(records.map { $0.id }))
         for record in records where !scan.onDisk.contains(record.id) {
             context.delete(record)

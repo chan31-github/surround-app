@@ -10,15 +10,22 @@ enum LibraryMode: String {
 }
 
 /// What the list and the map show: everything, one trip, or the spheres
-/// that still need a position (spec 6.6, "unplaced").
+/// that still need a position (spec 6.6, "unplaced"). Search narrows any of them.
 enum LibraryFilter: Hashable {
     case all
     case trip(String)
     case unplaced
 }
 
-/// The library as a grid or a map, with one trip filter shared by both
-/// (spec 6.6: the map is a toggle in the library, not a separate tab).
+/// The spheres of one trip, for the sectioned list.
+struct TripSection: Identifiable {
+    let day: String
+    let spheres: [SphereRecord]
+    var id: String { day }
+}
+
+/// The library as a trip-sectioned grid or a map, with one filter and one
+/// search shared by both (spec 6.6: the map is a toggle in the library).
 struct LibraryView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \SphereRecord.capturedAt, order: .reverse) private var spheres: [SphereRecord]
@@ -26,8 +33,10 @@ struct LibraryView: View {
     @AppStorage("library.mode") private var modeRaw = LibraryMode.list.rawValue
     @AppStorage("library.satellite") private var satellite = false
     @State private var filter: LibraryFilter = .all
+    @State private var query = ""
     @State private var path = NavigationPath()
     @State private var showCapture = false
+    @State private var showTrips = false
     @State private var renamingTrip: String?
     @State private var renameText = ""
     @State private var clusterSelection: ClusterSelection?
@@ -48,9 +57,10 @@ struct LibraryView: View {
                 .navigationDestination(for: SphereRecord.self) { sphere in
                     SphereDetailView(sphere: sphere)
                 }
+                .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Title, tag or trip")
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        tripMenu
+                        filterMenu
                     }
                     ToolbarItem(placement: .principal) {
                         Picker("View", selection: mode) {
@@ -81,9 +91,16 @@ struct LibraryView: View {
                         try? await Task.sleep(for: .milliseconds(350))
                         path = NavigationPath()
                         if case .unplaced = filter { filter = .all }
+                        query = ""
                         modeRaw = LibraryMode.map.rawValue
                         mapFocus = focus
                     }
+                }
+                .sheet(isPresented: $showTrips) {
+                    TripsView(trips: tripSummaries,
+                              selected: selectedTripDay,
+                              onSelect: { day in filter = day.map { .trip($0) } ?? .all },
+                              onRename: { day, name in rename(day, to: name) })
                 }
                 .sheet(item: $placement) { request in
                     PlacementSheet(request: request,
@@ -93,11 +110,6 @@ struct LibraryView: View {
                     }
                     .presentationDetents([.medium, .large])
                 }
-                .alert("Could not save the position", isPresented: Binding(get: { placementError != nil }, set: { if !$0 { placementError = nil } })) {
-                    Button("OK", role: .cancel) {}
-                } message: {
-                    Text(placementError ?? "")
-                }
                 .sheet(item: $clusterSelection) { selection in
                     ClusterListView(spheres: selection.spheres, tripName: tripName) { sphere in
                         clusterSelection = nil
@@ -105,9 +117,17 @@ struct LibraryView: View {
                     }
                     .presentationDetents([.medium, .large])
                 }
+                .alert("Could not save the position", isPresented: Binding(get: { placementError != nil }, set: { if !$0 { placementError = nil } })) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(placementError ?? "")
+                }
                 .alert("Rename trip", isPresented: Binding(get: { renamingTrip != nil }, set: { if !$0 { renamingTrip = nil } })) {
                     TextField("Trip name", text: $renameText)
-                    Button("Save") { saveRename() }
+                    Button("Save") {
+                        if let day = renamingTrip { rename(day, to: renameText) }
+                        renamingTrip = nil
+                    }
                     Button("Cancel", role: .cancel) {}
                 } message: {
                     Text("Leave the name empty to show the date again.")
@@ -117,7 +137,7 @@ struct LibraryView: View {
         .environment(navigation)
     }
 
-    // MARK: Filter and trips
+    // MARK: Trips and filter
 
     private var title: String {
         switch filter {
@@ -127,52 +147,93 @@ struct LibraryView: View {
         }
     }
 
+    private var selectedTripDay: String? {
+        if case .trip(let day) = filter { return day }
+        return nil
+    }
+
+    private var namesByDay: [String: String] {
+        Dictionary(tripNames.map { ($0.dayKey, $0.name) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private func tripName(_ day: String) -> String {
+        if let named = namesByDay[day], !named.isEmpty { return named }
+        return TripSummary(day: day, name: nil, count: 0, placedCount: 0, coverSphere: UUID()).dateText
+    }
+
+    /// Every trip in the library, newest first, regardless of filter or search.
+    private var tripSummaries: [TripSummary] {
+        let names = namesByDay
+        var order: [String] = []
+        var members: [String: [SphereRecord]] = [:]
+        for sphere in spheres {
+            if members[sphere.tripDayKey] == nil { order.append(sphere.tripDayKey) }
+            members[sphere.tripDayKey, default: []].append(sphere)
+        }
+        return order.map { day in
+            let group = members[day] ?? []
+            let name = names[day].flatMap { $0.isEmpty ? nil : $0 }
+            return TripSummary(day: day, name: name, count: group.count,
+                               placedCount: group.filter { $0.latitude != nil && $0.longitude != nil }.count,
+                               coverSphere: group.first?.id ?? UUID())
+        }
+    }
+
     private var unplacedSpheres: [SphereRecord] {
         spheres.filter { $0.latitude == nil || $0.longitude == nil }
     }
 
-    /// Day keys of every trip, newest first.
-    private var tripDays: [String] {
-        Array(Set(spheres.map { TripDay.key(for: $0.capturedAt) })).sorted(by: >)
-    }
-
-    private func tripName(_ day: String) -> String {
-        if let named = tripNames.first(where: { $0.dayKey == day }), !named.name.isEmpty {
-            return named.name
-        }
-        return tripDate(day)
-    }
-
-    private func tripDate(_ day: String) -> String {
-        guard let date = TripDay.start(ofKey: day) else { return day }
-        return date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).year())
-    }
-
+    /// The filter applied, then the search: title, tags and trip name.
     private var filtered: [SphereRecord] {
+        let base: [SphereRecord]
         switch filter {
-        case .all: return spheres
-        case .trip(let day): return spheres.filter { TripDay.key(for: $0.capturedAt) == day }
-        case .unplaced: return unplacedSpheres
+        case .all: base = spheres
+        case .trip(let day): base = spheres.filter { $0.tripDayKey == day }
+        case .unplaced: base = unplacedSpheres
+        }
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return base }
+        let names = namesByDay
+        return base.filter { sphere in
+            sphere.title.localizedStandardContains(q)
+                || sphere.tags.contains { $0.localizedStandardContains(q) }
+                || (names[sphere.tripDayKey]?.localizedStandardContains(q) ?? false)
         }
     }
 
-    private var tripMenu: some View {
+    private func sections(of list: [SphereRecord]) -> [TripSection] {
+        var order: [String] = []
+        var members: [String: [SphereRecord]] = [:]
+        for sphere in list {
+            if members[sphere.tripDayKey] == nil { order.append(sphere.tripDayKey) }
+            members[sphere.tripDayKey, default: []].append(sphere)
+        }
+        return order.map { TripSection(day: $0, spheres: members[$0] ?? []) }
+    }
+
+    private var filterMenu: some View {
         Menu {
-            Picker("Filter", selection: $filter) {
-                Text("All spheres").tag(LibraryFilter.all)
-                if !unplacedSpheres.isEmpty {
-                    Text("Without a position (\(unplacedSpheres.count))").tag(LibraryFilter.unplaced)
+            Button {
+                filter = .all
+            } label: {
+                Label("All spheres", systemImage: filter == .all ? "checkmark" : "")
+            }
+            Button {
+                showTrips = true
+            } label: {
+                Label(selectedTripDay == nil ? "Trips" : "Trips (\(tripName(selectedTripDay!)))", systemImage: "calendar")
+            }
+            if !unplacedSpheres.isEmpty {
+                Button {
+                    filter = .unplaced
+                } label: {
+                    Label("Without a position (\(unplacedSpheres.count))", systemImage: filter == .unplaced ? "checkmark" : "mappin.slash")
                 }
             }
-            Picker("Trip", selection: $filter) {
-                ForEach(tripDays, id: \.self) { day in
-                    Text(tripName(day)).tag(LibraryFilter.trip(day))
-                }
-            }
-            if case .trip(let day) = filter {
+            if let day = selectedTripDay {
                 Divider()
                 Button("Rename trip", systemImage: "pencil") {
-                    renameText = tripNames.first(where: { $0.dayKey == day })?.name ?? ""
+                    renameText = namesByDay[day] ?? ""
                     renamingTrip = day
                 }
             }
@@ -180,6 +241,19 @@ struct LibraryView: View {
             Label("Filter", systemImage: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
         .disabled(spheres.isEmpty)
+    }
+
+    private func rename(_ day: String, to newName: String) {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let existing = tripNames.first(where: { $0.dayKey == day }) {
+            if name.isEmpty {
+                context.delete(existing)
+            } else {
+                existing.name = name
+            }
+        } else if !name.isEmpty {
+            context.insert(TripRecord(dayKey: day, name: name))
+        }
     }
 
     // MARK: Placement
@@ -200,21 +274,6 @@ struct LibraryView: View {
         }
     }
 
-    private func saveRename() {
-        guard let day = renamingTrip else { return }
-        let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let existing = tripNames.first(where: { $0.dayKey == day }) {
-            if name.isEmpty {
-                context.delete(existing)
-            } else {
-                existing.name = name
-            }
-        } else if !name.isEmpty {
-            context.insert(TripRecord(dayKey: day, name: name))
-        }
-        renamingTrip = nil
-    }
-
     // MARK: Content
 
     @ViewBuilder
@@ -228,34 +287,90 @@ struct LibraryView: View {
         } else if mode.wrappedValue == .map {
             mapContent
         } else {
-            grid
+            let shown = filtered
+            if shown.isEmpty {
+                ContentUnavailableView.search(text: query)
+            } else {
+                grid(sections(of: shown))
+            }
         }
     }
 
-    private var grid: some View {
+    private func grid(_ sections: [TripSection]) -> some View {
         ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 12)], spacing: 12) {
-                ForEach(filtered) { sphere in
-                    NavigationLink(value: sphere) {
-                        SphereCard(sphere: sphere)
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button("Delete", systemImage: "trash", role: .destructive) {
-                            delete(sphere)
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
+                ForEach(sections) { section in
+                    Section {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 12)], spacing: 12) {
+                            ForEach(section.spheres) { sphere in
+                                NavigationLink(value: sphere) {
+                                    SphereCard(sphere: sphere)
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button("Delete", systemImage: "trash", role: .destructive) {
+                                        delete(sphere)
+                                    }
+                                }
+                            }
                         }
+                        .padding(.horizontal)
+                        .padding(.bottom, 20)
+                    } header: {
+                        tripHeader(section)
                     }
                 }
             }
-            .padding()
         }
     }
 
+    private func tripHeader(_ section: TripSection) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(tripName(section.day))
+                    .font(.headline)
+                    .lineLimit(1)
+                if namesByDay[section.day].map({ !$0.isEmpty }) ?? false {
+                    Text(TripSummary(day: section.day, name: nil, count: 0, placedCount: 0, coverSphere: UUID()).dateText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Text(section.spheres.count == 1 ? "1 sphere" : "\(section.spheres.count) spheres")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Menu {
+                if selectedTripDay != section.day {
+                    Button("Only this trip", systemImage: "line.3.horizontal.decrease.circle") {
+                        filter = .trip(section.day)
+                    }
+                }
+                Button("Show on map", systemImage: "map") {
+                    filter = .trip(section.day)
+                    modeRaw = LibraryMode.map.rawValue
+                }
+                Button("Rename trip", systemImage: "pencil") {
+                    renameText = namesByDay[section.day] ?? ""
+                    renamingTrip = section.day
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.body)
+                    .padding(.leading, 6)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
     private var mapContent: some View {
-        let placed = filtered.compactMap(mapSphere)
-        let unplaced = filtered.count - placed.count
+        let shown = filtered
+        let placed = shown.compactMap(mapSphere)
+        let unplaced = shown.count - placed.count
         return SphereMapView(spheres: placed,
-                             paths: tripPaths,
+                             paths: tripPaths(shown),
                              satellite: satellite,
                              pendingDrop: placement.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) },
                              focus: mapFocus,
@@ -313,11 +428,11 @@ struct LibraryView: View {
         }
     }
 
-    /// One dashed line per trip in the current filter, through its placed
-    /// spheres in capture order, when there are at least two.
-    private var tripPaths: [MapPath] {
-        let placed = filtered.filter { $0.latitude != nil && $0.longitude != nil }
-        let byTrip = Dictionary(grouping: placed) { TripDay.key(for: $0.capturedAt) }
+    /// One dashed line per trip in the shown set, through its placed spheres
+    /// in capture order, when there are at least two.
+    private func tripPaths(_ shown: [SphereRecord]) -> [MapPath] {
+        let placed = shown.filter { $0.latitude != nil && $0.longitude != nil }
+        let byTrip = Dictionary(grouping: placed) { $0.tripDayKey }
         return byTrip.compactMap { day, members -> MapPath? in
             guard members.count >= 2 else { return nil }
             let ordered = members.sorted { $0.capturedAt < $1.capturedAt }
@@ -328,7 +443,7 @@ struct LibraryView: View {
 
     private func mapSphere(_ sphere: SphereRecord) -> MapSphere? {
         guard let lat = sphere.latitude, let lon = sphere.longitude else { return nil }
-        let day = TripDay.key(for: sphere.capturedAt)
+        let day = sphere.tripDayKey
         var details: [String] = []
         if let altitude = sphere.altitudeMetres {
             details.append(String(format: "%.0f m", altitude))
@@ -351,6 +466,8 @@ struct LibraryView: View {
     }
 }
 
+/// A grid card: the section header carries the date, so an untitled sphere
+/// shows its time.
 private struct SphereCard: View {
     let sphere: SphereRecord
 
@@ -359,12 +476,13 @@ private struct SphereCard: View {
             SphereThumbnail(id: sphere.id)
                 .aspectRatio(2, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-            Text(sphere.title.isEmpty ? sphere.capturedAt.formatted(date: .abbreviated, time: .shortened) : sphere.title)
+            Text(sphere.title.isEmpty ? sphere.capturedAt.formatted(date: .omitted, time: .shortened) : sphere.title)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
-            Text("\(sphere.shotCount) shots")
+            Text(sphere.tags.isEmpty ? "\(sphere.shotCount) shots" : sphere.tags.joined(separator: " · "))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 }
@@ -380,6 +498,35 @@ struct PlacementRequest: Identifiable {
     let id = UUID()
     let latitude: Double
     let longitude: Double
+}
+
+/// A row for the picker sheets: thumbnail, title or date, and a detail line.
+private struct SphereRow: View {
+    let sphere: SphereRecord
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SphereThumbnail(id: sphere.id)
+                .frame(width: 88, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(sphere.title.isEmpty ? sphere.capturedAt.formatted(date: .abbreviated, time: .shortened) : sphere.title)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+    }
 }
 
 /// Picks the sphere to place at a long-pressed spot (spec 6.6, manual pins).
@@ -399,14 +546,16 @@ private struct PlacementSheet: View {
                 if !unplaced.isEmpty {
                     Section("Place here") {
                         ForEach(unplaced) { sphere in
-                            row(sphere)
+                            Button { onPlace(sphere) } label: { SphereRow(sphere: sphere, detail: tripName(sphere.tripDayKey)) }
+                                .buttonStyle(.plain)
                         }
                     }
                 }
                 if !movable.isEmpty {
                     Section("Move here (placed by hand before)") {
                         ForEach(movable) { sphere in
-                            row(sphere)
+                            Button { onPlace(sphere) } label: { SphereRow(sphere: sphere, detail: tripName(sphere.tripDayKey)) }
+                                .buttonStyle(.plain)
                         }
                     }
                 }
@@ -419,27 +568,6 @@ private struct PlacementSheet: View {
                 }
             }
         }
-    }
-
-    private func row(_ sphere: SphereRecord) -> some View {
-        Button {
-            onPlace(sphere)
-        } label: {
-            HStack(spacing: 12) {
-                SphereThumbnail(id: sphere.id)
-                    .frame(width: 88, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(sphere.title.isEmpty ? sphere.capturedAt.formatted(date: .abbreviated, time: .shortened) : sphere.title)
-                        .font(.body.weight(.medium))
-                        .lineLimit(1)
-                    Text(tripName(TripDay.key(for: sphere.capturedAt)))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -454,30 +582,8 @@ private struct ClusterListView: View {
     var body: some View {
         NavigationStack {
             List(spheres) { sphere in
-                Button {
-                    onOpen(sphere)
-                } label: {
-                    HStack(spacing: 12) {
-                        SphereThumbnail(id: sphere.id)
-                            .frame(width: 88, height: 44)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(sphere.title.isEmpty ? sphere.capturedAt.formatted(date: .abbreviated, time: .shortened) : sphere.title)
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            Text(subtitle(for: sphere))
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .buttonStyle(.plain)
+                Button { onOpen(sphere) } label: { SphereRow(sphere: sphere, detail: detail(for: sphere)) }
+                    .buttonStyle(.plain)
             }
             .navigationTitle(spheres.count == 1 ? "1 sphere here" : "\(spheres.count) spheres here")
             .navigationBarTitleDisplayMode(.inline)
@@ -489,8 +595,8 @@ private struct ClusterListView: View {
         }
     }
 
-    private func subtitle(for sphere: SphereRecord) -> String {
-        var parts = [tripName(TripDay.key(for: sphere.capturedAt))]
+    private func detail(for sphere: SphereRecord) -> String {
+        var parts = [tripName(sphere.tripDayKey)]
         if !sphere.title.isEmpty {
             parts.append(sphere.capturedAt.formatted(date: .omitted, time: .shortened))
         }
