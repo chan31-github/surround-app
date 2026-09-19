@@ -23,6 +23,9 @@ final class SphereRecord {
     var shotCount: Int
     var fileSizeBytes: Int
     var tags: [String]
+    /// Modification date of metadata.json when this row last read it, so a
+    /// change synced from another device can be noticed and applied.
+    var metadataModifiedAt: Date?
 
     init(metadata: SphereMetadata, fileSizeBytes: Int) {
         id = metadata.id
@@ -42,12 +45,32 @@ final class SphereRecord {
         tags = metadata.tags
     }
 
+    /// Refreshes the row from a metadata file that changed under it.
+    func apply(_ metadata: SphereMetadata, modifiedAt: Date?) {
+        title = metadata.title
+        latitude = metadata.latitude
+        longitude = metadata.longitude
+        altitudeMetres = metadata.altitudeMetres
+        horizontalAccuracyMetres = metadata.horizontalAccuracyMetres
+        isManualPosition = metadata.isManualPosition
+        frontHeadingDegrees = metadata.frontHeadingDegrees
+        tags = metadata.tags
+        metadataModifiedAt = modifiedAt
+    }
+
+    /// Records the file's new modification date after this device wrote it,
+    /// so the next reconcile does not treat its own edit as a remote one.
+    private func noteOwnWrite() {
+        metadataModifiedAt = try? SphereStore.files(for: id).metadata.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
     /// Renames the sphere, in the file first and then in this row.
     func setTitle(_ newTitle: String) throws {
         let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed != title else { return }
         try SphereStore.updateMetadata(id: id) { $0.title = trimmed }
         title = trimmed
+        noteOwnWrite()
     }
 
     /// Replaces the tags, in the file first and then in this row.
@@ -61,6 +84,7 @@ final class SphereRecord {
         guard unique != tags else { return }
         try SphereStore.updateMetadata(id: id) { $0.tags = unique }
         tags = unique
+        noteOwnWrite()
     }
 
     /// Records a position the user chose on the map, in the file first and
@@ -76,5 +100,6 @@ final class SphereRecord {
         self.longitude = longitude
         horizontalAccuracyMetres = nil
         isManualPosition = true
+        noteOwnWrite()
     }
 }

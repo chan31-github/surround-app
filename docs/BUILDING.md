@@ -70,6 +70,35 @@ A few lines of macOS Swift that depend on `Packages/SurroundCore`, load each
 `StitchResult.refinement` reports what the ring analysis measured per pair.
 That loop runs in under a second and is how the stitcher is tuned.
 
+## Turning on iCloud sync
+
+Sync (F17) is built and inert: without the iCloud entitlement the app keeps
+its spheres in Documents and the filter menu says "iCloud: off". The
+entitlement needs the paid Apple Developer Program, which a free Personal
+Team cannot sign for. To turn it on:
+
+1. Enrol at developer.apple.com/programs (approval can take up to two
+   days), then in Xcode > Settings > Accounts make sure the paid team is
+   the one selected; `DEVELOPMENT_TEAM` in `Config/Local.xcconfig` may need
+   to change to the new team ID.
+2. Uncomment the `entitlements:` block under the Surround target in
+   `project.yml` and run `./bootstrap.sh`.
+3. Build once with `-allowProvisioningUpdates` (or press Run in Xcode) so
+   Xcode registers the App ID's iCloud capability and the container
+   `iCloud.com.chan31.surround`. If it complains the container does not
+   exist, add it once under Signing & Capabilities > iCloud in Xcode.
+4. Install on both devices, signed into the same iCloud account with iCloud
+   Drive on. On first launch each device moves its local spheres into the
+   container; the menu then says "iCloud: in sync" or "fetching n files".
+
+What syncs: every sphere folder, and `trips.json` with the trip names.
+Metadata and thumbnails are fetched as soon as they appear; the full image
+is fetched when a sphere is opened (a cloud badge marks spheres not yet
+downloaded); source shots are never fetched proactively. Edits to titles,
+tags, positions and trip names are file writes, so they propagate, and the
+receiving device refreshes its rows when it sees the file change. The
+folder shows in the Files app under Surround for checking what has arrived.
+
 ## iPad and orientation
 
 The app runs on iPad (family 1,2); the iPad supports landscape, the iPhone

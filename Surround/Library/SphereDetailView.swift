@@ -11,15 +11,35 @@ struct SphereDetailView: View {
     @State private var exportURL: URL?
     @State private var showInfo = false
     @State private var confirmDelete = false
+    @State private var isDownloading = false
+    @State private var downloadFailed = false
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let image {
                 SphereViewer(image: image, frontHeadingDegrees: sphere.frontHeadingDegrees)
+            } else if downloadFailed {
+                ContentUnavailableView {
+                    Label("Still in iCloud", systemImage: "icloud.slash")
+                } description: {
+                    Text("This sphere has not finished downloading. Check the connection and try again.")
+                } actions: {
+                    Button("Try again") {
+                        downloadFailed = false
+                        Task { await load() }
+                    }
+                }
             } else {
-                ProgressView()
-                    .tint(.white)
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .tint(.white)
+                    if isDownloading {
+                        Text("Downloading from iCloud")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .navigationTitle(title)
@@ -65,14 +85,28 @@ struct SphereDetailView: View {
 
     private func load() async {
         let id = sphere.id
-        let path = SphereStore.files(for: id).image.path
-        let loaded = await Task.detached(priority: .userInitiated) { () -> (UIImage?, URL?) in
-            let img = UIImage(contentsOfFile: path)
-            let url = try? SphereStore.exportJPEG(id: id)
-            return (img, url)
-        }.value
+        let imageURL = SphereStore.files(for: id).image
+        // A sphere kept on another device arrives here as metadata and
+        // thumbnail first; the full image is fetched when it is opened.
+        if !SphereStore.isDownloaded(imageURL) {
+            isDownloading = true
+            let arrived = (try? await SphereStore.ensureDownloaded(imageURL)) ?? false
+            isDownloading = false
+            if !arrived {
+                downloadFailed = true
+                return
+            }
+        }
+        let loaded = await Self.loadFiles(id: id, path: imageURL.path)
         image = loaded.0
         exportURL = loaded.1
+    }
+
+    @concurrent
+    private nonisolated static func loadFiles(id: UUID, path: String) async -> (UIImage?, URL?) {
+        let img = UIImage(contentsOfFile: path)
+        let url = try? SphereStore.exportJPEG(id: id)
+        return (img, url)
     }
 }
 

@@ -378,7 +378,11 @@ design already requires. Details:
   downloads them with `startDownloadingUbiquitousItem`; thumbnails are
   fetched first so the library fills in before the full images land.
 - iCloud entitlements need the paid Apple Developer Program, which
-  decision 4 already schedules before M3.
+  decision 4 already schedules before M3. Built in v0.6 behind that gate:
+  `SyncCoordinator` finds the container, moves local spheres in, watches it
+  with a metadata query and fetches metadata and thumbnails first; trip
+  names live in `trips.json` so they sync; the index refreshes rows whose
+  metadata file changed. Inert until the entitlement is signed.
 - Until sync ships, the fallback is AirDrop of a sphere folder as a bundle
   and an "import" entry point, which is also the basis for F11.
 

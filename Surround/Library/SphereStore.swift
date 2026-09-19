@@ -1,9 +1,12 @@
 import Foundation
+import os
 import SwiftData
 import SurroundCore
 import UIKit
 
-/// File layout of one sphere inside the app's Documents folder:
+/// File layout of one sphere inside the spheres folder, which lives in the
+/// app's Documents folder until iCloud Drive is available and in the app's
+/// ubiquity container after that (spec 6.7, F17):
 ///
 ///     Documents/spheres/<uuid>/
 ///         sphere.jpg       stitched equirectangular image
@@ -31,9 +34,70 @@ nonisolated enum SphereStoreError: LocalizedError {
 }
 
 nonisolated enum SphereStore {
-    static var root: URL {
+    /// The spheres folder inside the app's own Documents.
+    static var localRoot: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("spheres", isDirectory: true)
+    }
+
+    private static let syncedRoot = OSAllocatedUnfairLock<URL?>(initialState: nil)
+
+    /// Where spheres live now: the iCloud container once `SyncCoordinator`
+    /// has found it and moved the local spheres there, otherwise Documents.
+    static var root: URL {
+        syncedRoot.withLock { $0 } ?? localRoot
+    }
+
+    /// Switches every path the store hands out to the synced folder.
+    static func useSyncedRoot(_ url: URL) {
+        syncedRoot.withLock { $0 = url }
+    }
+
+    /// Trip names by day key, kept as a file beside the spheres so they sync
+    /// like everything else; the TripRecord rows are rebuilt from it.
+    static var tripNamesFile: URL { root.appendingPathComponent("trips.json") }
+
+    static func loadTripNames() -> [String: String] {
+        guard let data = try? Data(contentsOf: tripNamesFile),
+              let names = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+        return names
+    }
+
+    /// Sets or, with an empty name, removes a trip's name in the file.
+    static func setTripName(_ name: String, forDay day: String) throws {
+        var names = loadTripNames()
+        if name.isEmpty { names[day] = nil } else { names[day] = name }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try encoder.encode(names).write(to: tripNamesFile, options: .atomic)
+    }
+
+    // MARK: iCloud state of a file
+
+    /// True when the file's bytes are on this device (always true for a
+    /// file outside iCloud). A file that is still in the cloud is listed as
+    /// a placeholder and cannot be read.
+    static func isDownloaded(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]) else {
+            return FileManager.default.fileExists(atPath: url.path)
+        }
+        guard values.isUbiquitousItem == true else { return FileManager.default.fileExists(atPath: url.path) }
+        return values.ubiquitousItemDownloadingStatus == .current || values.ubiquitousItemDownloadingStatus == .downloaded
+    }
+
+    /// Asks iCloud for the file if needed and waits until it is readable, or
+    /// gives up after `timeout` seconds.
+    @concurrent
+    static func ensureDownloaded(_ url: URL, timeout: TimeInterval = 90) async throws -> Bool {
+        if isDownloaded(url) { return true }
+        try FileManager.default.startDownloadingUbiquitousItem(at: url)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            try await Task.sleep(for: .milliseconds(400))
+            if isDownloaded(url) { return true }
+        }
+        return false
     }
 
     static func files(for id: UUID) -> SphereFiles {
@@ -88,37 +152,66 @@ nonisolated enum SphereStore {
         return true
     }
 
-    /// Every sphere folder that has a metadata file, whatever the index says.
-    static func storedMetadata() -> [SphereMetadata] {
+    /// One sphere folder as the scan saw it.
+    struct StoredSphere: Sendable {
+        let metadata: SphereMetadata
+        /// Modification date of metadata.json, for spotting edits made on
+        /// another device.
+        let metadataModifiedAt: Date?
+    }
+
+    /// Every sphere folder whose metadata file is readable, whatever the
+    /// index says. A folder whose metadata is still in the cloud is skipped
+    /// until it arrives; the sync coordinator asks for it.
+    static func storedSpheres() -> [StoredSphere] {
         guard let folders = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return [] }
         return folders.compactMap { folder in
-            guard let data = try? Data(contentsOf: folder.appendingPathComponent("metadata.json")),
+            let metaURL = folder.appendingPathComponent("metadata.json")
+            guard let data = try? Data(contentsOf: metaURL),
                   let meta = try? MetadataCoding.decode(SphereMetadata.self, from: data),
                   folder.lastPathComponent == meta.id.uuidString else { return nil }
-            return meta
+            let modified = try? metaURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            return StoredSphere(metadata: meta, metadataModifiedAt: modified)
         }
     }
 
-    /// What a scan of the folders found, relative to the ids the index had.
+    static func storedMetadata() -> [SphereMetadata] {
+        storedSpheres().map { $0.metadata }
+    }
+
+    /// What a scan of the folders found, relative to what the index had.
     struct IndexScan: Sendable {
         var onDisk: Set<UUID>
-        var missingFromIndex: [(metadata: SphereMetadata, fileSizeBytes: Int)]
+        var missingFromIndex: [(sphere: StoredSphere, fileSizeBytes: Int)]
+        /// Rows whose metadata file changed since they were indexed.
+        var changed: [StoredSphere]
+        var tripNames: [String: String]
     }
 
     /// Reads every metadata file and sizes the folders the index lacks. Runs
     /// off the main actor; the file reading grows with the library.
     @concurrent
-    static func scanFolders(indexed: Set<UUID>) async -> IndexScan {
-        let stored = storedMetadata()
-        let missing = stored.filter { !indexed.contains($0.id) }
-            .map { (metadata: $0, fileSizeBytes: directorySize(files(for: $0.id).directory)) }
-        return IndexScan(onDisk: Set(stored.map { $0.id }), missingFromIndex: missing)
+    static func scanFolders(indexed: [UUID: Date?]) async -> IndexScan {
+        let stored = storedSpheres()
+        var missing: [(sphere: StoredSphere, fileSizeBytes: Int)] = []
+        var changed: [StoredSphere] = []
+        for sphere in stored {
+            if let indexedAt = indexed[sphere.metadata.id] {
+                if let modified = sphere.metadataModifiedAt, modified != indexedAt { changed.append(sphere) }
+            } else {
+                missing.append((sphere, directorySize(files(for: sphere.metadata.id).directory)))
+            }
+        }
+        return IndexScan(onDisk: Set(stored.map { $0.metadata.id }), missingFromIndex: missing,
+                         changed: changed, tripNames: loadTripNames())
     }
 
     /// Makes the index match the folders: files are the source of truth, so a
-    /// folder without a row gets one and a row without a folder is dropped.
-    /// Runs at every launch; later this is also how spheres synced from
-    /// another device appear. Only the SwiftData work touches the main actor.
+    /// folder without a row gets one, a row without a folder is dropped, and
+    /// a row whose metadata file changed (an edit synced from another device)
+    /// is refreshed. Trip names come from trips.json the same way. Runs at
+    /// launch and whenever the sync coordinator sees the folder change. Only
+    /// the SwiftData work touches the main actor.
     @MainActor
     static func reconcileIndex(in context: ModelContext) async {
         let records = (try? context.fetch(FetchDescriptor<SphereRecord>())) ?? []
@@ -126,13 +219,40 @@ nonisolated enum SphereStore {
         for record in records where record.tripDayKey.isEmpty {
             record.tripDayKey = TripDay.key(for: record.capturedAt)
         }
-        let scan = await scanFolders(indexed: Set(records.map { $0.id }))
+        var indexed: [UUID: Date?] = [:]
+        for record in records { indexed[record.id] = record.metadataModifiedAt }
+        let scan = await scanFolders(indexed: indexed)
+        var byID: [UUID: SphereRecord] = [:]
+        for record in records { byID[record.id] = record }
         for record in records where !scan.onDisk.contains(record.id) {
             context.delete(record)
         }
         for entry in scan.missingFromIndex {
-            context.insert(SphereRecord(metadata: entry.metadata, fileSizeBytes: entry.fileSizeBytes))
+            let record = SphereRecord(metadata: entry.sphere.metadata, fileSizeBytes: entry.fileSizeBytes)
+            record.metadataModifiedAt = entry.sphere.metadataModifiedAt
+            context.insert(record)
         }
+        for sphere in scan.changed {
+            byID[sphere.metadata.id]?.apply(sphere.metadata, modifiedAt: sphere.metadataModifiedAt)
+        }
+
+        // Trip names: the file wins when it exists; rows the file lacks go.
+        if FileManager.default.fileExists(atPath: tripNamesFile.path) {
+            let rows = (try? context.fetch(FetchDescriptor<TripRecord>())) ?? []
+            var rowsByDay: [String: TripRecord] = [:]
+            for row in rows { rowsByDay[row.dayKey] = row }
+            for (day, name) in scan.tripNames {
+                if let row = rowsByDay[day] {
+                    if row.name != name { row.name = name }
+                } else {
+                    context.insert(TripRecord(dayKey: day, name: name))
+                }
+            }
+            for row in rows where scan.tripNames[row.dayKey] == nil {
+                context.delete(row)
+            }
+        }
+
         if await migrateThumbnailsIfNeeded() {
             ThumbnailRefresh.shared.bump()
         }

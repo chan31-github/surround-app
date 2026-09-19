@@ -58,10 +58,27 @@ targets:
         NSLocationWhenInUseUsageDescription: Surround records where each sphere was captured and which way you were facing.
         NSMotionUsageDescription: Surround uses motion sensors so you can look around a sphere by moving your phone.
         ITSAppUsesNonExemptEncryption: false
+        # Lets the synced spheres folder show in the Files app, which is handy
+        # for checking what has arrived. Inert until the iCloud entitlement is on.
+        NSUbiquitousContainers:
+          iCloud.com.chan31.surround:
+            NSUbiquitousContainerIsDocumentScopePublic: true
+            NSUbiquitousContainerSupportedFolderLevels: Any
+            NSUbiquitousContainerName: Surround
     settings:
       base:
         SWIFT_EMIT_LOC_STRINGS: NO
         ENABLE_PREVIEWS: YES
+    # iCloud Drive sync (F17) needs the paid Apple Developer Program; a free
+    # Personal Team cannot sign an app with these entitlements. Once enrolled,
+    # uncomment this block, run ./bootstrap.sh, and build with
+    # -allowProvisioningUpdates so Xcode registers the container.
+    # entitlements:
+    #   path: Surround/Surround.entitlements
+    #   properties:
+    #     com.apple.developer.icloud-container-identifiers: [iCloud.com.chan31.surround]
+    #     com.apple.developer.icloud-services: [CloudDocuments]
+    #     com.apple.developer.ubiquity-container-identifiers: [iCloud.com.chan31.surround]
     postBuildScripts:
       # Writes the commit, commit count and build time into the bundle so the
       # app can show which build is running (see BuildInfo.swift).

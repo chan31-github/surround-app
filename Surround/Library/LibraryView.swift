@@ -109,7 +109,13 @@ struct LibraryView: View {
                     CaptureView()
                 }
                 .task {
+                    SyncCoordinator.shared.start()
                     await SphereStore.reconcileIndex(in: context)
+                }
+                .task(id: SyncCoordinator.shared.changeCount) {
+                    // Spheres arriving from another device, or edits to them.
+                    await SphereStore.reconcileIndex(in: context)
+                    ThumbnailRefresh.shared.bump()
                 }
                 .onChange(of: navigation.focus) { _, focus in
                     guard let focus else { return }
@@ -265,14 +271,27 @@ struct LibraryView: View {
                 }
             }
             Divider()
+            Text(syncStatus)
             Text(BuildInfo.summary)
         } label: {
             Label("Filter", systemImage: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
     }
 
+    private var syncStatus: String {
+        switch SyncCoordinator.shared.state {
+        case .starting: return "iCloud: checking"
+        case .unavailable: return "iCloud: off, spheres stay on this device"
+        case .syncing:
+            let pending = SyncCoordinator.shared.pendingDownloads
+            return pending > 0 ? "iCloud: fetching \(pending) files" : "iCloud: in sync"
+        }
+    }
+
     private func rename(_ day: String, to newName: String) {
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The file is the source of truth and is what syncs; the row follows.
+        try? SphereStore.setTripName(name, forDay: day)
         if let existing = tripNames.first(where: { $0.dayKey == day }) {
             if name.isEmpty {
                 context.delete(existing)
@@ -514,6 +533,16 @@ private struct SphereCard: View {
             SphereThumbnail(id: sphere.id)
                 .aspectRatio(2, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(alignment: .topTrailing) {
+                    if !SphereStore.isDownloaded(SphereStore.files(for: sphere.id).image) {
+                        Image(systemName: "icloud.and.arrow.down")
+                            .font(.caption.weight(.semibold))
+                            .padding(5)
+                            .background(.thinMaterial, in: Circle())
+                            .padding(6)
+                            .accessibilityLabel("Not downloaded yet")
+                    }
+                }
             Text(sphere.title.isEmpty ? sphere.capturedAt.formatted(date: .omitted, time: .shortened) : sphere.title)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
