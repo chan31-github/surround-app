@@ -237,10 +237,11 @@ struct LibraryView: View {
                     renamingTrip = day
                 }
             }
+            Divider()
+            Text(BuildInfo.summary)
         } label: {
             Label("Filter", systemImage: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
-        .disabled(spheres.isEmpty)
     }
 
     private func rename(_ day: String, to newName: String) {
@@ -284,6 +285,7 @@ struct LibraryView: View {
             } description: {
                 Text("Tap + at a viewpoint to capture your first one.")
             }
+            .overlay(alignment: .bottom) { versionFooter }
         } else if mode.wrappedValue == .map {
             mapContent
         } else {
@@ -320,8 +322,17 @@ struct LibraryView: View {
                         tripHeader(section)
                     }
                 }
+                versionFooter
             }
         }
+    }
+
+    private var versionFooter: some View {
+        Text(BuildInfo.summary)
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
     }
 
     private func tripHeader(_ section: TripSection) -> some View {

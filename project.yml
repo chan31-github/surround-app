@@ -24,7 +24,8 @@ settings:
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
-    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    # Off so the build-info script below can read the git repository.
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
 
 targets:
   Surround:
@@ -41,6 +42,8 @@ targets:
       path: Surround/Info.plist
       properties:
         CFBundleDisplayName: Surround
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIRequiredDeviceCapabilities: [arkit, arm64]
@@ -52,3 +55,28 @@ targets:
       base:
         SWIFT_EMIT_LOC_STRINGS: NO
         ENABLE_PREVIEWS: YES
+    postBuildScripts:
+      # Writes the commit, commit count and build time into the bundle so the
+      # app can show which build is running (see BuildInfo.swift).
+      - name: Write build info
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/BuildInfo.plist
+        script: |
+          set -eu
+          cd "$SRCROOT"
+          HASH=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+          COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+          if git diff --quiet HEAD 2>/dev/null && [ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then DIRTY=""; else DIRTY="+"; fi
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          OUT="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BuildInfo.plist"
+          mkdir -p "$(dirname "$OUT")"
+          cat > "$OUT" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>commit</key><string>${HASH}${DIRTY}</string>
+          <key>commitCount</key><integer>${COUNT}</integer>
+          <key>builtAt</key><string>${DATE}</string>
+          </dict></plist>
+          PLIST

@@ -31,6 +31,16 @@ slower that way: a full sphere took six minutes on the phone instead of a
 few seconds. To step through package code in the debugger, remove that
 flag temporarily. The app target itself stays unoptimised in Debug.
 
+## Which build is on the phone
+
+The filter menu in the library, and the footer under the grid, show a line
+like `Surround 0.1.0 (57) · a1b2c3d+ · 19 Sep, 17:02`: the marketing
+version, the commit count, the short commit hash (with `+` when the tree
+had uncommitted changes) and the build time. A build script writes these
+into `BuildInfo.plist` in the bundle, so the line changes with every build
+even when the version does not. Compare the hash with `git log` to confirm
+a test device is running what you think it is.
+
 ## Running the core tests
 
 ```
@@ -127,7 +137,7 @@ reduce it.
 | `Surround/Capture` | ARKit session, guidance overlay, capture flow |
 | `Surround/Stitching` | `SphereStitcher` protocol, projection engine adapter, image conversion |
 | `Surround/Viewer` | SceneKit sphere, motion controller |
-| `Surround/Library` | SwiftData records (sphere index, trip names), file store with background index rebuild, shared thumbnail cache, trip-sectioned library with search, Trips screen, detail screen with title and tag editing |
+| `Surround/Library` | SwiftData records (sphere index, trip names), file store with background index rebuild and one-time thumbnail regeneration, shared thumbnail cache, trip-sectioned library with search, Trips screen, detail screen with title and tag editing |
 | `Surround/Map` | `MKMapView` wrapper: sphere pins with heading wedge, clusters, callouts, remembered region |
 | `Surround/Location` | Position and compass heading |
 | `project.yml` | XcodeGen project definition, including Info.plist keys |
