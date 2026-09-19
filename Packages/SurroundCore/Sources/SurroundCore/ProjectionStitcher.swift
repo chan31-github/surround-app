@@ -30,6 +30,9 @@ public struct StitchOptions: Equatable, Sendable {
     /// `refinement.smoothSeamFeatherDegrees` so brightness differences fade
     /// instead of stepping.
     public var seamFeatherDegrees: Float = 1.0
+    /// Multi-ring captures have no seam paths; each pixel goes to the shot
+    /// whose optical axis is nearest, crossfaded over this many degrees.
+    public var sphereFeatherDegrees: Float = 2.0
     public var refinement = RingRefinementOptions()
 
     public init() {}
@@ -55,6 +58,8 @@ public struct StitchResult: Sendable {
     public var coveredPitchRangeDegrees: ClosedRange<Float>?
     /// What the ring analysis measured and applied, when it ran.
     public var refinement: RingRefinementReport?
+    /// What the sphere analysis measured and applied, for multi-ring captures.
+    public var sphereRefinement: SphereRefinementReport?
 }
 
 /// Baseline stitcher: projects each shot onto the sphere from its orientation
@@ -97,16 +102,33 @@ public enum ProjectionStitcher {
         var coverage: [Int32]
     }
 
-    /// Projects every shot into `layout` and blends by weight. With `tables`
-    /// each shot owns the pixels between its two seams; without, the border
-    /// feather alone decides the blend. Rows are split into bands rendered in
-    /// parallel; each band writes only its own rows.
+    /// How overlapping shots share a pixel.
+    private enum Ownership {
+        /// Border feather only: every shot that sees the pixel contributes.
+        case blend
+        /// Ring seams: each shot owns the pixels between its two seams.
+        case seams(SeamTables)
+        /// The shot whose optical axis is angularly nearest owns the pixel,
+        /// with a crossfade this many degrees wide at the boundary.
+        case nearest(featherDegrees: Float)
+    }
+
+    /// Projects every shot into `layout` and blends by weight according to
+    /// `ownership`. Rows are split into bands rendered in parallel; each band
+    /// writes only its own rows.
     private static func composite(layout: EquirectangularLayout,
                                   prepared: [Prepared],
-                                  tables: SeamTables?,
+                                  ownership: Ownership,
                                   seamFeatherDegrees: Float,
                                   sources: [UnsafePointer<UInt8>],
                                   progress: (@Sendable (Float) -> Void)?) -> Composite {
+        var tables: SeamTables?
+        var nearestFeather: Float?
+        switch ownership {
+        case .blend: break
+        case .seams(let t): tables = t
+        case .nearest(let degrees): nearestFeather = max(0.05, degrees)
+        }
         let outW = layout.width
         let outH = layout.height
         let sinYaw = (0..<outW).map { sin(Angle.radians(layout.yawDegrees(forColumn: Float($0) + 0.5))) }
@@ -136,6 +158,7 @@ public enum ProjectionStitcher {
                                                 sinYaw: sinYaw, cosYaw: cosYaw, sinPitch: sinPitch, cosPitch: cosPitch,
                                                 prepared: prepared, sources: sources,
                                                 out: outBase, coverage: covBase,
+                                                nearestFeatherRadians: nearestFeather.map { Angle.radians($0) },
                                                 seams: tables == nil ? nil : BandWork.Seams(
                                                     relYaw: relYawPtr.baseAddress!, left: leftPtr.baseAddress!,
                                                     right: rightPtr.baseAddress!, leftFeather: leftFPtr.baseAddress!,
@@ -183,11 +206,22 @@ public enum ProjectionStitcher {
         let sources: [UnsafePointer<UInt8>]
         let out: UnsafeMutablePointer<UInt8>
         let coverage: UnsafeMutablePointer<Int32>
+        let nearestFeatherRadians: Float?
         let seams: Seams?
+
+        private struct Candidate {
+            var index = 0
+            var u: Float = 0
+            var v: Float = 0
+            var weight: Float = 0
+            /// Angle between the pixel and the shot's optical axis, radians.
+            var angle: Float = 0
+        }
 
         func render(band: Int) {
             let y0 = band * bandRows
             let y1 = min(outH, y0 + bandRows)
+            var candidates = [Candidate](repeating: Candidate(), count: max(1, prepared.count))
             for y in y0..<y1 {
                 let sp = sinPitch[y]
                 let cp = cosPitch[y]
@@ -196,6 +230,7 @@ public enum ProjectionStitcher {
                 for x in 0..<outW {
                     let d = Vec3(sinYaw[x] * cp, sp, -cosYaw[x] * cp)
                     var r: Float = 0, g: Float = 0, b: Float = 0, wsum: Float = 0
+                    var found = 0
                     for i in 0..<prepared.count {
                         let p = prepared[i]
                         guard let uv = p.projector.project(d) else { continue }
@@ -213,11 +248,46 @@ public enum ProjectionStitcher {
                             // here, the neighbour still fills it after normalisation.
                             w *= max(0.02, min(1, 0.5 + dist))
                         }
+                        if nearestFeatherRadians != nil {
+                            // Chord length approximates the angle for small angles.
+                            let cosine = max(-1, min(1, d.dot(p.projector.forward)))
+                            candidates[found] = Candidate(index: i, u: u, v: v, weight: w, angle: (2 * (1 - cosine)).squareRoot())
+                            found += 1
+                            continue
+                        }
                         let s = PixelSampling.bilinearRGB(sources[i], width: p.projector.width, height: p.projector.height, u: u, v: v)
                         r += s.r * p.gain * w
                         g += s.g * p.gain * w
                         b += s.b * p.gain * w
                         wsum += w
+                    }
+                    if let featherRadians = nearestFeatherRadians, found > 0 {
+                        // The nearest optical axis owns the pixel; the runner-up
+                        // sets where the crossfade sits.
+                        var best = 0
+                        var bestAngle = Float.greatestFiniteMagnitude
+                        var secondAngle = Float.greatestFiniteMagnitude
+                        for k in 0..<found {
+                            let a = candidates[k].angle
+                            if a < bestAngle {
+                                secondAngle = bestAngle
+                                bestAngle = a
+                                best = k
+                            } else if a < secondAngle {
+                                secondAngle = a
+                            }
+                        }
+                        for k in 0..<found {
+                            let c = candidates[k]
+                            let gap = k == best ? secondAngle - bestAngle : bestAngle - c.angle
+                            let w = c.weight * max(0.02, min(1, 0.5 + gap / featherRadians))
+                            let p = prepared[c.index]
+                            let s = PixelSampling.bilinearRGB(sources[c.index], width: p.projector.width, height: p.projector.height, u: c.u, v: c.v)
+                            r += s.r * p.gain * w
+                            g += s.g * p.gain * w
+                            b += s.b * p.gain * w
+                            wsum += w
+                        }
                     }
                     if wsum > 0 {
                         let inv = 1 / wsum
@@ -257,25 +327,38 @@ public enum ProjectionStitcher {
         var rotations = shots.map { $0.rotation }
         var gains = [Float](repeating: 1, count: n)
         var report: RingRefinementReport?
-        var tables: SeamTables?
+        var sphereReport: SphereRefinementReport?
+        var ownership = Ownership.blend
         let r = options.refinement
         if n >= 2, r.refineAlignment || r.compensateExposure || r.computeSeams {
-            let refined = RingRefinement.refine(shots: shots, options: r)
-            rotations = refined.rotations
-            gains = refined.gains
-            report = refined.report
-            if !refined.seams.isEmpty {
-                tables = seamTables(refined: refined, layout: layout)
+            if RingRefinement.isSingleRing(shots) {
+                let refined = RingRefinement.refine(shots: shots, options: r)
+                rotations = refined.rotations
+                gains = refined.gains
+                report = refined.report
+                if !refined.seams.isEmpty {
+                    ownership = .seams(seamTables(refined: refined, layout: layout))
+                }
+            } else {
+                let refined = SphereRefinement.refine(shots: shots, options: r)
+                rotations = refined.rotations
+                gains = refined.gains
+                sphereReport = refined.report
+                ownership = .nearest(featherDegrees: options.sphereFeatherDegrees)
             }
         }
         progress?(0.1)
 
+        // With nothing deciding ownership, the border feather is the only
+        // blend, so widen it.
+        var feather = options.featherFraction
+        if case .blend = ownership { feather = max(feather, 0.2) }
         let prepared = (0..<n).map {
-            Prepared(shot: shots[$0], rotation: rotations[$0], gain: gains[$0], featherFraction: options.featherFraction)
+            Prepared(shot: shots[$0], rotation: rotations[$0], gain: gains[$0], featherFraction: feather)
         }
         let images = shots.map { $0.image }
         let composite = withPixelPointers(images) { sources in
-            self.composite(layout: layout, prepared: prepared, tables: tables, seamFeatherDegrees: options.seamFeatherDegrees,
+            self.composite(layout: layout, prepared: prepared, ownership: ownership, seamFeatherDegrees: options.seamFeatherDegrees,
                            sources: sources) { progress?(0.1 + 0.9 * $0) }
         }
 
@@ -289,7 +372,8 @@ public enum ProjectionStitcher {
                             layout: layout,
                             rowCoverage: rowCoverage,
                             coveredPitchRangeDegrees: range,
-                            refinement: report)
+                            refinement: report,
+                            sphereRefinement: sphereReport)
     }
 
     private static func seamTables(refined: RefinedRing, layout: EquirectangularLayout) -> SeamTables {

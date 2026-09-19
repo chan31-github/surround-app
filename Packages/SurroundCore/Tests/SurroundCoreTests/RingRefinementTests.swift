@@ -16,13 +16,14 @@ final class RingRefinementTests: XCTestCase {
         }
     }()
 
-    /// Textured below about 12 degrees of pitch, a smooth sky above it.
-    static func worldLuma(_ d: Vec3) -> Float {
+    /// Textured below about 12 degrees of pitch, a smooth sky above it, or
+    /// textured everywhere when `texturedSky` is set.
+    static func worldLuma(_ d: Vec3, texturedSky: Bool = false) -> Float {
         var v: Float = 0.45
         let yaw = atan2(d.x, -d.z)
         let pitch = asin(max(-1, min(1, d.y)))
         let pitchDeg = Angle.degrees(pitch)
-        let texture = max(0, min(1, (15 - pitchDeg) / 5))
+        let texture = texturedSky ? 1 : max(0, min(1, (15 - pitchDeg) / 5))
         v += 0.1 * sin(pitch)
         if texture > 0 {
             var t: Float = 0.08 * sin(41 * yaw) * sin(29 * pitch + 1)
@@ -36,14 +37,14 @@ final class RingRefinementTests: XCTestCase {
     }
 
     /// Renders what a camera with `rotation` would see of the world.
-    static func shot(rotation: Mat3, width: Int = 240, height: Int = 180, fx: Float = 160) -> StitchShot {
+    static func shot(rotation: Mat3, width: Int = 240, height: Int = 180, fx: Float = 160, texturedSky: Bool = false) -> StitchShot {
         let intrinsics = CameraIntrinsics(fx: fx, fy: fx, cx: Float(width) / 2, cy: Float(height) / 2, width: width, height: height)
         let projector = ShotProjector(intrinsics: intrinsics, rotation: rotation, width: width, height: height)
         var image = RGBAImage(width: width, height: height)
         for y in 0..<height {
             for x in 0..<width {
                 let d = projector.direction(u: Float(x) + 0.5, v: Float(y) + 0.5)
-                let g = UInt8(max(0, min(255, (worldLuma(d) * 255).rounded())))
+                let g = UInt8(max(0, min(255, (worldLuma(d, texturedSky: texturedSky) * 255).rounded())))
                 image.setPixel(x: x, y: y, r: g, g: g, b: g)
             }
         }
@@ -277,5 +278,29 @@ final class RingRefinementTests: XCTestCase {
         }
         // The ramp itself costs some error away from the seams; ghosting would cost far more.
         XCTAssertLessThan(sumErr / Float(count), 14, "horizon mean error \(sumErr / Float(count))")
+    }
+
+    func testSingleRingDetectionRejectsSpherePlans() {
+        let ring = (0..<8).map { Self.shot(rotation: Self.pose(yaw: Float($0) * 45, pitch: Float($0 % 2) * 2)) }
+        XCTAssertTrue(RingRefinement.isSingleRing(ring))
+
+        // The horizon ring plus a few upper-ring shots is a sphere capture as
+        // far as the stitcher is concerned: it takes the sphere path, which
+        // reports its own analysis and none from the ring solver.
+        let plan = CapturePlan.sphere(startYawDegrees: 0, fovAcrossYawDegrees: 53, fovAcrossPitchDegrees: 67)
+        let horizon = plan.targets.filter { $0.pitchDegrees == 0 }
+        let upper = plan.targets.filter { $0.pitchDegrees > 0 && $0.pitchDegrees < 89 }.prefix(3)
+        let sphere = (horizon + upper).map { Self.shot(rotation: Self.pose(yaw: $0.yawDegrees, pitch: $0.pitchDegrees)) }
+        XCTAssertFalse(RingRefinement.isSingleRing(sphere))
+
+        var options = StitchOptions()
+        options.outputWidth = 360
+        options.refinement.degreesPerPixel = 1
+        options.refinement.passes = 1
+        let result = ProjectionStitcher.stitch(shots: sphere, options: options)
+        XCTAssertNil(result.refinement)
+        XCTAssertNotNil(result.sphereRefinement)
+        XCTAssertEqual(result.rowCoverage[90], 1, accuracy: 1e-6)
+        XCTAssertFalse(RingRefinement.isSingleRing([]))
     }
 }

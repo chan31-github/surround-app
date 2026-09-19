@@ -7,6 +7,11 @@ struct CaptureView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
     @State private var model = CaptureViewModel()
+    @AppStorage("capture.planKind") private var planKindRaw = CapturePlanKind.ring.rawValue
+
+    private var planKind: Binding<CapturePlanKind> {
+        Binding(get: { CapturePlanKind(rawValue: planKindRaw) ?? .ring }, set: { planKindRaw = $0.rawValue })
+    }
 
     var body: some View {
         ZStack {
@@ -16,7 +21,8 @@ struct CaptureView: View {
                 ARPreview(session: model.capture.session)
                     .ignoresSafeArea()
                 CaptureOverlay(capture: model.capture,
-                               onStart: { model.beginRing() },
+                               planKind: planKind,
+                               onStart: { model.beginCapture(kind: planKind.wrappedValue) },
                                onCancel: { dismiss() })
             case .stitching(let fraction):
                 StitchingView(fraction: fraction, shotCount: model.capture.shots.count)

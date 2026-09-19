@@ -58,12 +58,16 @@ public struct CaptureManifest: Codable, Equatable, Sendable {
     public var frontYawDegrees: Float
     public var poses: [ShotPose]
     public var planYawStepDegrees: Float
+    /// "ring" (M1, one horizontal ring) or "sphere" (M2, rings plus poles).
+    /// Absent in manifests written before M2, which were all rings.
+    public var planKind: String?
 
-    public init(startedAt: Date, frontYawDegrees: Float, poses: [ShotPose], planYawStepDegrees: Float) {
+    public init(startedAt: Date, frontYawDegrees: Float, poses: [ShotPose], planYawStepDegrees: Float, planKind: String? = nil) {
         self.startedAt = startedAt
         self.frontYawDegrees = frontYawDegrees
         self.poses = poses
         self.planYawStepDegrees = planYawStepDegrees
+        self.planKind = planKind
     }
 }
 

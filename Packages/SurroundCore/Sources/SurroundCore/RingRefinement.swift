@@ -134,6 +134,16 @@ struct PatchWindow {
 /// exposure, and finds the seam through each overlap. Everything works on
 /// small equirectangular renders so it costs a fraction of the stitch itself.
 public enum RingRefinement {
+    /// True when every shot looks at roughly the same pitch, which is what
+    /// the ring solver assumes: it pairs shots by yaw order and closes one
+    /// loop. A multi-ring sphere needs a graph solver instead, so it must
+    /// not be handed to `refine`.
+    public static func isSingleRing(_ shots: [StitchShot], toleranceDegrees: Float = 20) -> Bool {
+        guard !shots.isEmpty else { return false }
+        let pitches = shots.map { CameraPose(rotation: $0.rotation).pitchDegrees }
+        return pitches.max()! - pitches.min()! <= toleranceDegrees
+    }
+
     public static func refine(shots: [StitchShot], options: RingRefinementOptions = RingRefinementOptions()) -> RefinedRing {
         let n = shots.count
         var projectors = shots.map { ShotProjector(shot: $0) }

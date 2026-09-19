@@ -11,7 +11,18 @@ let package = Package(
         .library(name: "SurroundCore", targets: ["SurroundCore"]),
     ],
     targets: [
-        .target(name: "SurroundCore"),
+        .target(
+            name: "SurroundCore",
+            swiftSettings: [
+                // Xcode builds packages unoptimised in Debug. The stitcher is
+                // numerical code that runs 100x slower that way (a sphere took
+                // six minutes instead of three seconds), so this target is
+                // always optimised. Debugging the package itself means
+                // removing this line temporarily. Allowed because the package
+                // is a local dependency, never fetched by version.
+                .unsafeFlags(["-O"], .when(configuration: .debug)),
+            ]
+        ),
         .testTarget(name: "SurroundCoreTests", dependencies: ["SurroundCore"]),
     ]
 )

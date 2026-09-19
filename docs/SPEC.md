@@ -131,7 +131,8 @@ whole app is native Swift with SwiftUI. There is no framework split.
 | Sync | iCloud Drive: the `spheres/` folder lives in the app's ubiquity container | Files are already the source of truth and each sphere is a self-contained folder, so file sync is the sync. No CloudKit schema constraints, no server code |
 | Map | MapKit through `MKMapView` (UIKit) wrapped for SwiftUI, not the SwiftUI `Map` view | `MKMapView` has annotation clustering, custom annotation views for the heading wedge and thumbnail, and overlays for the trip path; the SwiftUI `Map` on iOS 17 has none of these |
 | Stitching, M1 | Projection stitcher in `SurroundCore`: pure Swift, projects each still onto the sphere from its ARKit pose and intrinsics. Before compositing, `RingRefinement` corrects each shot's yaw and pitch by correlating it with its neighbours (ring closed, front shot anchored), equalises exposure with a per-shot gain, and cuts each overlap along the seam where the two shots agree best, with a crossfade that widens in smooth areas such as sky and stays narrow over detail | No dependency, testable on any platform, and a direct check of whether the poses are good enough. Pose-only projection with a wide crossfade remains available as `StitchOptions.plain` for diagnosing captures |
-| Stitching, M2 onwards | OpenCV (official iOS xcframework) via a small Objective-C++ bridge, using its cylindrical and spherical warpers, exposure compensation, and multi-band blending, seeded with ARKit rotations as initial camera poses | The only mature, well-tested open stitching pipeline available on iOS. Seeding with known rotations makes it robust for low-texture sky and sea, which is where feature matching alone fails on a summit |
+| Stitching, M2 | The same pure-Swift engine extended to a graph: `SphereRefinement` measures every overlapping pair with the ring code's correlation, solves per-shot yaw and pitch jointly by weighted least squares anchored on the front shot (pole shots join the yaw solve only), equalises exposure the same way, and composites by nearest optical axis with a narrow crossfade | On the first real sphere this removed the double images the pose-only projection produced, with no dependency added. Whether OpenCV is still needed is decided on M2's exit criterion; its case now rests on multi-band blending and parallax handling, not alignment |
+| Stitching, later option | OpenCV (official iOS xcframework) via a small Objective-C++ bridge, using its warpers, exposure compensation and multi-band blending, seeded with ARKit rotations | Kept as the exit plan if the Swift engine's seams are not good enough at normal zoom on a summit; brings binary size and a bridge |
 
 Apple does not expose the built-in Camera app's panorama stitcher as an API,
 and the Vision framework does not stitch, so a third-party stitcher is
@@ -182,7 +183,9 @@ covered range recorded in metadata. This means:
    progress bar. The result opens in the viewer with the covered pitch range
    shown. Buttons: Keep, Discard. Retake of a single segment is M3 (F6).
 6. M2 adds rings at further pitches plus zenith and nadir with the same
-   mechanism; `CapturePlan.sphere` already generates that plan.
+   mechanism. `CapturePlan.sphere` orders them as a serpentine, so the
+   user turns around once rather than once per ring, and keeps the horizon
+   front as the first shot because it locks exposure.
 
 The main camera is used, not the ultra-wide, because edge sharpness and
 distortion on the ultra-wide degrade the stitch. Ultra-wide is a possible

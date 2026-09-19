@@ -1,6 +1,7 @@
 import CoreLocation
 import Foundation
 import Observation
+import os
 import SwiftData
 import SurroundCore
 import UIKit
@@ -24,6 +25,7 @@ final class CaptureViewModel {
     var stitcher: any SphereStitcher = ProjectionSphereStitcher()
     var outputWidth = 4096
 
+    private static let log = Logger(subsystem: "com.chan31.surround", category: "stitch")
     private let sphereID: UUID
     private let files: SphereFiles
     private var hasStarted = false
@@ -58,10 +60,10 @@ final class CaptureViewModel {
     }
 
     /// The user is facing the direction they want as the sphere's front.
-    func beginRing() {
+    func beginCapture(kind: CapturePlanKind) {
         frontLocation = location.location
         frontHeadingDegrees = location.trueHeadingDegrees
-        capture.beginRing()
+        capture.beginCapture(kind: kind)
     }
 
     /// Stops everything and removes the sphere's folder unless it was kept.
@@ -103,11 +105,13 @@ final class CaptureViewModel {
                 throw CaptureError.step("Saving capture manifest", error)
             }
             let result: StitchResult
+            let stitchStarted = Date()
             do {
                 result = try await Self.runStitcher(stitcher, job: job, progress: report)
             } catch {
                 throw CaptureError.step("Stitching", error)
             }
+            Self.log.notice("Stitched \(job.shots.count) shots (\(manifest.planKind ?? "ring")) in \(Date().timeIntervalSince(stitchStarted), format: .fixed(precision: 1)) s")
 
             var meta = SphereMetadata(id: sphereID,
                                       capturedAt: manifest.startedAt,

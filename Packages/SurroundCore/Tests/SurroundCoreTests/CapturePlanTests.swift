@@ -74,4 +74,43 @@ final class CapturePlanTests: XCTestCase {
         XCTAssertGreaterThan(s.angularSpeedDegreesPerSecond, 40)
         XCTAssertFalse(s.isSteady)
     }
+
+    func testSphereIsOneTurnStartingAtTheHorizonFront() {
+        let plan = CapturePlan.sphere(startYawDegrees: 8.4, fovAcrossYawDegrees: 53, fovAcrossPitchDegrees: 67)
+        let targets = plan.targets
+        XCTAssertEqual(targets.count, 32)
+        XCTAssertEqual(Array(targets.map { $0.id }), Array(0..<targets.count))
+
+        // Exposure locks on the first shot, so it must be the horizon front.
+        XCTAssertEqual(targets[0].pitchDegrees, 0)
+        XCTAssertEqual(targets[0].yawDegrees, 8.4, accuracy: 1e-4)
+
+        // The first column goes down to the nadir, then up to the zenith.
+        let firstColumnPitches = targets.prefix(5).map { $0.pitchDegrees }
+        XCTAssertEqual(firstColumnPitches, [0, -40.2, -90, 40.2, 90])
+
+        // Total yaw travel between consecutive non-pole targets is one turn
+        // plus the wiggle from rings whose columns do not line up exactly
+        // (at most half a step each way per column), not one turn per ring.
+        var travel: Float = 0
+        var previous: Float?
+        for t in targets where abs(t.pitchDegrees) < 89 {
+            if let p = previous { travel += abs(Angle.wrapDegrees180(t.yawDegrees - p)) }
+            previous = t.yawDegrees
+        }
+        let columns = Float(targets.filter { $0.pitchDegrees == 0 }.count)
+        XCTAssertLessThan(travel, 360 + columns * plan.yawStepDegrees / 2, "yaw travel \(travel)")
+        XCTAssertGreaterThan(travel, 300)
+
+        // Every horizon column is visited in yaw order.
+        let horizon = targets.filter { $0.pitchDegrees == 0 }
+        for (i, t) in horizon.enumerated() {
+            XCTAssertEqual(Angle.wrapDegrees360(t.yawDegrees - 8.4), Float(i) * plan.yawStepDegrees, accuracy: 1e-3)
+        }
+
+        // Consecutive targets never jump more than one column in yaw.
+        for (a, b) in zip(targets, targets.dropFirst()) where abs(a.pitchDegrees) < 89 && abs(b.pitchDegrees) < 89 {
+            XCTAssertLessThanOrEqual(abs(Angle.wrapDegrees180(b.yawDegrees - a.yawDegrees)), plan.yawStepDegrees * 1.5 + 1e-3)
+        }
+    }
 }

@@ -61,6 +61,13 @@ public struct CapturePlan: Equatable, Sendable {
     /// Milestone 2: a full sphere as a stack of rings plus zenith and nadir.
     /// Rings nearer the poles need fewer shots because the effective field of
     /// view across yaw grows by 1 / cos(pitch).
+    ///
+    /// The order is a serpentine so the user turns around once instead of
+    /// once per ring: every target is assigned to the nearest horizon column,
+    /// and consecutive columns are walked top-down then bottom-up. The first
+    /// shot is the horizon front, because it locks exposure (F7) and the sky
+    /// would be the wrong reference; the first column then goes down to the
+    /// nadir, back up to the zenith, and the serpentine continues from the top.
     public static func sphere(startYawDegrees: Float,
                               fovAcrossYawDegrees: Float,
                               fovAcrossPitchDegrees: Float,
@@ -73,24 +80,57 @@ public struct CapturePlan: Equatable, Sendable {
             pitches.append(-p)
             p += pitchStep
         }
-        // Order rings from the horizon outwards so the user does the easy ring first.
-        pitches.sort { abs($0) == abs($1) ? $0 > $1 : abs($0) < abs($1) }
 
-        var targets: [CaptureTarget] = []
+        struct Planned {
+            let yaw: Float
+            let pitch: Float
+        }
         var horizonStep: Float = 0
+        var horizonCount = 0
+        var ringShots: [Planned] = []
         for pitch in pitches {
             let effectiveFOV = min(360, fovAcrossYawDegrees / max(0.2, cos(Angle.radians(pitch))))
             let count = shotsPerRing(fovAcrossYawDegrees: effectiveFOV, minimumOverlap: minimumOverlap)
             let step = 360 / Float(count)
-            if pitch == 0 { horizonStep = step }
+            if pitch == 0 {
+                horizonStep = step
+                horizonCount = count
+            }
             for i in 0..<count {
-                targets.append(CaptureTarget(id: targets.count,
-                                             yawDegrees: Angle.wrapDegrees180(startYawDegrees + step * Float(i)),
-                                             pitchDegrees: pitch))
+                ringShots.append(Planned(yaw: Angle.wrapDegrees180(startYawDegrees + step * Float(i)), pitch: pitch))
             }
         }
-        targets.append(CaptureTarget(id: targets.count, yawDegrees: startYawDegrees, pitchDegrees: 90))
-        targets.append(CaptureTarget(id: targets.count, yawDegrees: startYawDegrees, pitchDegrees: -90))
+
+        // Nearest horizon column for every ring shot.
+        var columns = [[Planned]](repeating: [], count: max(1, horizonCount))
+        for shot in ringShots {
+            let offset = Angle.wrapDegrees360(shot.yaw - startYawDegrees)
+            let column = Int((offset / horizonStep).rounded()) % max(1, horizonCount)
+            columns[column].append(shot)
+        }
+
+        var ordered: [Planned] = []
+        for (k, column) in columns.enumerated() {
+            let byPitchDescending = column.sorted { $0.pitch > $1.pitch }
+            if k == 0 {
+                // Front first, then down to the nadir, then up to the zenith.
+                let below = byPitchDescending.filter { $0.pitch < 0 }
+                let above = byPitchDescending.filter { $0.pitch > 0 }.reversed()
+                ordered.append(contentsOf: byPitchDescending.filter { $0.pitch == 0 })
+                ordered.append(contentsOf: below)
+                ordered.append(Planned(yaw: startYawDegrees, pitch: -90))
+                ordered.append(contentsOf: above)
+                ordered.append(Planned(yaw: startYawDegrees, pitch: 90))
+            } else if k % 2 == 1 {
+                ordered.append(contentsOf: byPitchDescending)
+            } else {
+                ordered.append(contentsOf: byPitchDescending.reversed())
+            }
+        }
+
+        let targets = ordered.enumerated().map { index, shot in
+            CaptureTarget(id: index, yawDegrees: Angle.wrapDegrees180(shot.yaw), pitchDegrees: shot.pitch)
+        }
         return CapturePlan(targets: targets, yawStepDegrees: horizonStep)
     }
 }

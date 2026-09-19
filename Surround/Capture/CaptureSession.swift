@@ -5,6 +5,23 @@ import Observation
 import SurroundCore
 import UIKit
 
+/// What the guided capture covers (spec 6.3 step 6).
+enum CapturePlanKind: String, CaseIterable, Identifiable {
+    /// M1: one horizontal ring.
+    case ring
+    /// M2: rings at several pitches plus zenith and nadir.
+    case sphere
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .ring: return "Ring"
+        case .sphere: return "Full sphere"
+        }
+    }
+}
+
 /// One stored still with its pose.
 struct CapturedShot: Identifiable {
     var id: Int { pose.index }
@@ -57,6 +74,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     }
 
     @ObservationIgnored private(set) var frontYawDegrees: Float = 0
+    @ObservationIgnored private(set) var planKind: CapturePlanKind = .ring
     @ObservationIgnored private(set) var startedAt = Date()
     @ObservationIgnored private(set) var highResolutionSupported = false
 
@@ -94,17 +112,28 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         transition(to: .preview)
     }
 
-    /// Locks the current viewing direction in as the sphere's front and builds the ring plan.
-    func beginRing() {
+    /// Locks the current viewing direction in as the sphere's front and
+    /// builds the plan: one ring, or rings plus the poles for a full sphere.
+    func beginCapture(kind: CapturePlanKind) {
         guard phase == .preview, let frame = session.currentFrame else { return }
         let pose = Self.pose(of: frame.camera)
         let intrinsics = Self.intrinsics(of: frame.camera)
+        // In portrait the sensor's short side spans yaw and its long side spans pitch.
         yawFieldOfViewDegrees = intrinsics.fovAcrossHeightDegrees
         frontYawDegrees = pose.yawDegrees
+        planKind = kind
         startedAt = Date()
-        plan = CapturePlan.ring(startYawDegrees: pose.yawDegrees,
-                                fovAcrossYawDegrees: yawFieldOfViewDegrees,
-                                minimumOverlap: minimumOverlap)
+        switch kind {
+        case .ring:
+            plan = CapturePlan.ring(startYawDegrees: pose.yawDegrees,
+                                    fovAcrossYawDegrees: yawFieldOfViewDegrees,
+                                    minimumOverlap: minimumOverlap)
+        case .sphere:
+            plan = CapturePlan.sphere(startYawDegrees: pose.yawDegrees,
+                                      fovAcrossYawDegrees: yawFieldOfViewDegrees,
+                                      fovAcrossPitchDegrees: intrinsics.fovAcrossWidthDegrees,
+                                      minimumOverlap: minimumOverlap)
+        }
         currentTargetIndex = 0
         evaluator.reset()
         haptics.prepare()
@@ -114,6 +143,22 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     func stop() {
         session.pause()
         if phase != .finished { transition(to: .idle) }
+    }
+
+    /// How many shots `kind` would take with the current camera, for setting
+    /// expectations before Start. Nil until the camera has a frame.
+    func plannedShotCount(for kind: CapturePlanKind) -> Int? {
+        guard let frame = session.currentFrame else { return nil }
+        let intrinsics = Self.intrinsics(of: frame.camera)
+        switch kind {
+        case .ring:
+            return CapturePlan.ring(startYawDegrees: 0, fovAcrossYawDegrees: intrinsics.fovAcrossHeightDegrees,
+                                    minimumOverlap: minimumOverlap).targets.count
+        case .sphere:
+            return CapturePlan.sphere(startYawDegrees: 0, fovAcrossYawDegrees: intrinsics.fovAcrossHeightDegrees,
+                                      fovAcrossPitchDegrees: intrinsics.fovAcrossWidthDegrees,
+                                      minimumOverlap: minimumOverlap).targets.count
+        }
     }
 
     private func transition(to newPhase: Phase) {
@@ -131,7 +176,8 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         CaptureManifest(startedAt: startedAt,
                         frontYawDegrees: frontYawDegrees,
                         poses: shots.map { $0.pose },
-                        planYawStepDegrees: plan?.yawStepDegrees ?? 0)
+                        planYawStepDegrees: plan?.yawStepDegrees ?? 0,
+                        planKind: planKind.rawValue)
     }
 
     // MARK: ARSessionDelegate
