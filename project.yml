@@ -20,7 +20,8 @@ settings:
     SWIFT_VERSION: "6.0"
     SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
     SWIFT_APPROACHABLE_CONCURRENCY: YES
-    TARGETED_DEVICE_FAMILY: "1"
+    # iPhone and iPad (spec 6.7); the iPad is a viewing and browsing device.
+    TARGETED_DEVICE_FAMILY: "1,2"
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
@@ -45,7 +46,13 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
+        # iPhone stays portrait (decision 19, reversed in v0.6 after testing);
+        # the iPad supports every orientation, with capture showing a prompt in
+        # landscape and the viewer correcting its motion mapping for the
+        # interface orientation.
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UIRequiresFullScreen: false
         UIRequiredDeviceCapabilities: [arkit, arm64]
         NSCameraUsageDescription: Surround uses the camera to capture the photos that make up a sphere.
         NSLocationWhenInUseUsageDescription: Surround records where each sphere was captured and which way you were facing.

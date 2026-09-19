@@ -107,7 +107,7 @@ have, **P3** later or never. IDs are stable for reference in issues.
 | N4 | **Outdoor usability.** Capture screen is legible in direct sunlight (high-contrast overlays, large targets). All capture actions are possible with one thumb. |
 | N5 | **Privacy.** No data leaves the device unless the user exports or shares. No analytics in M1 to M3. Location is stored only with the user's own spheres, and the map view never sends sphere positions anywhere: the base map is fetched by region, the pins are drawn locally. |
 | N6 | **Maintainability.** Stitching, viewer rendering, and storage are behind protocols so each can be replaced. Every third-party dependency has a stated reason and an exit plan. |
-| N7 | **Supported devices.** iOS 27 and iPadOS 27 or later, iPhone and iPad. The library, map and viewer support every orientation on both devices. Capture is portrait only on both devices. |
+| N7 | **Supported devices.** iOS 27 and iPadOS 27 or later, iPhone and iPad. On the iPad the library, map and viewer support every orientation; the iPhone is portrait only (decision 19). Capture is portrait only on both devices. |
 
 ## 6. Technical approach
 
@@ -338,9 +338,10 @@ in the content column, map or viewer in the detail column. In compact
 width the existing stack with the list/map toggle remains. The viewer
 opens full screen on both devices.
 
-**Orientation.** The library, map and viewer support all orientations on
-both devices. Two pieces of code currently assume portrait and must become
-orientation-aware before the lock is lifted:
+**Orientation.** On the iPad the library, map and viewer support all
+orientations; the iPhone stays portrait (decision 19). Two pieces of code
+assumed portrait and became orientation-aware before the iPad's lock was
+lifted:
 
 - The viewer's motion mapping (section 6.4). The device frame's screen-up
   axis changes with interface orientation; the correction is one extra
@@ -351,10 +352,16 @@ orientation-aware before the lock is lifted:
   than trying to handle landscape geometry (the yaw field of view and the
   screen-up axis both swap).
 
-Project settings: `TARGETED_DEVICE_FAMILY` 1,2; iPhone orientations
-portrait plus both landscapes; iPad all four; `UIRequiresFullScreen` false
+Project settings: `TARGETED_DEVICE_FAMILY` 1,2; iPhone portrait only;
+iPad all four; `UIRequiresFullScreen` false
 so Split View and Stage Manager work; `UIRequiredDeviceCapabilities`
-keeps `arkit`, which every iPad on iPadOS 27 satisfies.
+keeps `arkit`, which every iPad on iPadOS 27 satisfies. Done in v0.6: the
+viewer's motion mapping takes the window scene's interface orientation on
+every sample; capture shows a rotate prompt over the live preview in
+landscape; regular width uses a two-column split with trips in the sidebar
+and the library, grid or map, as the detail, which is the three-column
+layout above with the content and detail columns merged, since the viewer
+opens full screen anyway.
 
 **Sync (F17).** Moving the `spheres/` folder into the app's iCloud Drive
 ubiquity container makes every sphere folder sync as a unit. Each device
@@ -443,7 +450,7 @@ rest were proposed in v0.3 and v0.4 and confirmed in v0.5.
 | 16 | Swift 6 language mode with default main-actor isolation for the app target | Yes, in a dedicated change once M1 builds and runs, not mixed with feature work. Move view models to `@Observable` in the same pass. **Confirmed** in v0.5 (proposed in v0.4). |
 | 17 | Sync mechanism | iCloud Drive ubiquity container, not CloudKit through SwiftData. CloudKit forbids the unique constraint the index uses and would make the index, not the files, the source of truth. **Confirmed** in v0.5 (proposed in v0.4). |
 | 18 | Capture on the iPad | Allowed but unsupported: no iPad-specific capture work, portrait only, same as the phone. **Confirmed** in v0.5 (proposed in v0.4). |
-| 19 | iPhone landscape for the viewer | Yes, once the orientation correction in section 6.7 exists. **Confirmed** in v0.5 (proposed in v0.4). |
+| 19 | iPhone landscape for the viewer | No. Was yes in v0.5; reversed in v0.6 after testing on both devices: landscape viewing works well on the iPad and not on the phone, so the iPhone stays portrait only and the iPad supports every orientation. |
 | 20 | Stitching engine for M2 | The pure-Swift engine, extended with a graph solver and minimum-cut seams, rather than OpenCV. **Confirmed** in v0.6 by the owner's acceptance of the first full sphere; OpenCV stays the exit plan if a summit capture fails the M2 criterion. |
 | 21 | Sphere capture order | Serpentine, one turn, starting on the horizon front because the first shot locks exposure. **Confirmed** in v0.6 after the ring-by-ring order left the owner dizzy. |
 

@@ -45,15 +45,42 @@ struct LibraryView: View {
     @State private var navigation = LibraryNavigation()
     @State private var mapFocus: MapFocus?
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var columnVisibility = NavigationSplitViewVisibility.automatic
+
     private var mode: Binding<LibraryMode> {
         Binding(get: { LibraryMode(rawValue: modeRaw) ?? .list }, set: { modeRaw = $0.rawValue })
     }
 
     var body: some View {
+        if horizontalSizeClass == .regular {
+            // iPad, and the largest iPhones in landscape: trips in the sidebar,
+            // the library beside them (spec 6.7).
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                TripSidebar(trips: tripSummaries,
+                            unplacedCount: unplacedSpheres.count,
+                            selection: Binding(get: { filter }, set: { filter = $0 ?? .all }),
+                            tripName: tripName,
+                            onRename: { day in
+                                renameText = namesByDay[day] ?? ""
+                                renamingTrip = day
+                            })
+                    .navigationTitle("Surround")
+            } detail: {
+                libraryStack
+            }
+            .navigationSplitViewStyle(.balanced)
+        } else {
+            libraryStack
+        }
+    }
+
+    private var libraryStack: some View {
         NavigationStack(path: $path) {
             content
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbarTitleDisplayMode(.inline)
                 .navigationDestination(for: SphereRecord.self) { sphere in
                     SphereDetailView(sphere: sphere)
                 }
@@ -615,5 +642,57 @@ private struct ClusterListView: View {
             parts.append(String(format: "%.0f m", altitude))
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// The split view's sidebar: the same choices as the filter menu and the
+/// Trips screen, as a persistent list with the current filter selected.
+private struct TripSidebar: View {
+    let trips: [TripSummary]
+    let unplacedCount: Int
+    @Binding var selection: LibraryFilter?
+    let tripName: (String) -> String
+    let onRename: (String) -> Void
+
+    private var years: [(year: String, trips: [TripSummary])] {
+        let grouped = Dictionary(grouping: trips) { String($0.day.prefix(4)) }
+        return grouped.keys.sorted(by: >).map { ($0, grouped[$0]!) }
+    }
+
+    var body: some View {
+        List(selection: $selection) {
+            Section {
+                Label("All spheres", systemImage: "globe")
+                    .tag(LibraryFilter.all)
+                if unplacedCount > 0 {
+                    Label("Without a position (\(unplacedCount))", systemImage: "mappin.slash")
+                        .tag(LibraryFilter.unplaced)
+                }
+            }
+            ForEach(years, id: \.year) { group in
+                Section(group.year) {
+                    ForEach(group.trips) { trip in
+                        HStack(spacing: 10) {
+                            SphereThumbnail(id: trip.coverSphere)
+                                .frame(width: 56, height: 28)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(trip.displayName)
+                                    .lineLimit(1)
+                                Text(trip.name == nil ? (trip.count == 1 ? "1 sphere" : "\(trip.count) spheres") : "\(trip.dateText) · \(trip.count)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .tag(LibraryFilter.trip(trip.day))
+                        .contextMenu {
+                            Button("Rename trip", systemImage: "pencil") { onRename(trip.day) }
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
     }
 }

@@ -14,16 +14,33 @@ struct CaptureView: View {
     }
 
     var body: some View {
+        GeometryReader { geo in
+            captureBody(isLandscape: geo.size.width > geo.size.height)
+        }
+        .preferredColorScheme(.dark)
+        .onAppear { model.start() }
+        .onDisappear { model.teardown() }
+    }
+
+    /// Capture is portrait only on every device (spec 6.7): the yaw field of
+    /// view and the screen-up axis both assume it. In landscape the preview
+    /// stays live behind a prompt to turn the phone.
+    @ViewBuilder
+    private func captureBody(isLandscape: Bool) -> some View {
         ZStack {
             Color.black.ignoresSafeArea()
             switch model.stage {
             case .preview, .capturing:
                 ARPreview(session: model.capture.session)
                     .ignoresSafeArea()
-                CaptureOverlay(capture: model.capture,
-                               planKind: planKind,
-                               onStart: { model.beginCapture(kind: planKind.wrappedValue) },
-                               onCancel: { dismiss() })
+                if isLandscape {
+                    RotatePrompt(onCancel: { dismiss() })
+                } else {
+                    CaptureOverlay(capture: model.capture,
+                                   planKind: planKind,
+                                   onStart: { model.beginCapture(kind: planKind.wrappedValue) },
+                                   onCancel: { dismiss() })
+                }
             case .stitching(let fraction):
                 StitchingView(fraction: fraction, shotCount: model.capture.shots.count)
             case .review:
@@ -40,9 +57,28 @@ struct CaptureView: View {
                 FailedView(message: message, onClose: { dismiss() })
             }
         }
-        .preferredColorScheme(.dark)
-        .onAppear { model.start() }
-        .onDisappear { model.teardown() }
+    }
+}
+
+private struct RotatePrompt: View {
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "rectangle.portrait.rotate")
+                .font(.system(size: 44))
+            Text("Turn the phone upright to capture")
+                .font(.headline)
+            Text("Spheres are captured in portrait so each shot covers the most height.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Cancel", role: .cancel, action: onCancel)
+                .buttonStyle(.bordered)
+        }
+        .padding(24)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding()
     }
 }
 

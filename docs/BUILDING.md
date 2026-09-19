@@ -70,6 +70,18 @@ A few lines of macOS Swift that depend on `Packages/SurroundCore`, load each
 `StitchResult.refinement` reports what the ring analysis measured per pair.
 That loop runs in under a second and is how the stitcher is tuned.
 
+## iPad and orientation
+
+The app runs on iPad (family 1,2); the iPad supports landscape, the iPhone
+stays portrait.
+On an iPad simulator the library is a split view with trips in the
+sidebar; seed it the same way as the iPhone simulator below (copy whole
+sphere folders, not their contents). Capture stays portrait only and shows
+a prompt in landscape. The viewer corrects its motion mapping for the
+interface orientation; that correction can only be judged on an iPad, by
+turning it to landscape in the viewer and checking the horizon stays level
+and turning right still moves the view right.
+
 ## Trying the library and map in the simulator
 
 The simulator cannot capture, but it can show spheres. Copy a sphere folder

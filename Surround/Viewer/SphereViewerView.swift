@@ -30,6 +30,7 @@ struct SphereViewerView: UIViewRepresentable {
     func updateUIView(_ uiView: SCNView, context: Context) {
         context.coordinator.update(image: image)
         context.coordinator.state = state
+        context.coordinator.refreshInterfaceOrientation()
         state?.recentreAction = { [weak coordinator = context.coordinator] in coordinator?.recentre() }
     }
 
@@ -84,7 +85,11 @@ struct SphereViewerView: UIViewRepresentable {
 
             usesMotion = motion.isAvailable
             if usesMotion {
-                motion.onUpdate = { [weak self] q in self?.apply(deviceOrientation: q) }
+                motion.onUpdate = { [weak self] q in
+                    guard let self else { return }
+                    self.refreshInterfaceOrientation()
+                    self.apply(deviceOrientation: q)
+                }
                 motion.start()
             } else {
                 applyDragOnlyOrientation()
@@ -93,6 +98,14 @@ struct SphereViewerView: UIViewRepresentable {
 
         func detach() {
             motion.stop()
+        }
+
+        /// Reads the window's interface orientation so the motion mapping
+        /// keeps the horizon level with the screen in landscape. Called on
+        /// every SwiftUI update and on every motion sample; both are cheap.
+        func refreshInterfaceOrientation() {
+            guard let orientation = view?.window?.windowScene?.effectiveGeometry.interfaceOrientation else { return }
+            motion.interfaceOrientation = orientation
         }
 
         func update(image: UIImage) {
