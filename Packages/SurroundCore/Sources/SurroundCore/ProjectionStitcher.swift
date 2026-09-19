@@ -30,9 +30,12 @@ public struct StitchOptions: Equatable, Sendable {
     /// `refinement.smoothSeamFeatherDegrees` so brightness differences fade
     /// instead of stepping.
     public var seamFeatherDegrees: Float = 1.0
-    /// Multi-ring captures have no seam paths; each pixel goes to the shot
-    /// whose optical axis is nearest, crossfaded over this many degrees.
+    /// Crossfade width at the boundaries between shots of a multi-ring capture.
     public var sphereFeatherDegrees: Float = 2.0
+    /// Move each boundary of a multi-ring capture to where the two shots
+    /// disagree least (a minimum cut); off, the boundary sits midway between
+    /// the shots' optical axes.
+    public var sphereSeams = true
     public var refinement = RingRefinementOptions()
 
     public init() {}
@@ -111,6 +114,9 @@ public enum ProjectionStitcher {
         /// The shot whose optical axis is angularly nearest owns the pixel,
         /// with a crossfade this many degrees wide at the boundary.
         case nearest(featherDegrees: Float)
+        /// Ownership decided per cell of a low-resolution map, with a
+        /// distance field for the crossfade.
+        case map(OwnershipMap)
     }
 
     /// Projects every shot into `layout` and blends by weight according to
@@ -124,10 +130,12 @@ public enum ProjectionStitcher {
                                   progress: (@Sendable (Float) -> Void)?) -> Composite {
         var tables: SeamTables?
         var nearestFeather: Float?
+        var map: OwnershipMap?
         switch ownership {
         case .blend: break
         case .seams(let t): tables = t
         case .nearest(let degrees): nearestFeather = max(0.05, degrees)
+        case .map(let m): map = m
         }
         let outW = layout.width
         let outH = layout.height
@@ -159,6 +167,7 @@ public enum ProjectionStitcher {
                                                 prepared: prepared, sources: sources,
                                                 out: outBase, coverage: covBase,
                                                 nearestFeatherRadians: nearestFeather.map { Angle.radians($0) },
+                                                map: map,
                                                 seams: tables == nil ? nil : BandWork.Seams(
                                                     relYaw: relYawPtr.baseAddress!, left: leftPtr.baseAddress!,
                                                     right: rightPtr.baseAddress!, leftFeather: leftFPtr.baseAddress!,
@@ -207,6 +216,7 @@ public enum ProjectionStitcher {
         let out: UnsafeMutablePointer<UInt8>
         let coverage: UnsafeMutablePointer<Int32>
         let nearestFeatherRadians: Float?
+        let map: OwnershipMap?
         let seams: Seams?
 
         private struct Candidate {
@@ -216,6 +226,21 @@ public enum ProjectionStitcher {
             var weight: Float = 0
             /// Angle between the pixel and the shot's optical axis, radians.
             var angle: Float = 0
+        }
+
+        /// Ownership weight from the map cell under an output pixel: the owner
+        /// fades from 1 at the crossfade radius to 0.5 at the boundary, the
+        /// runner-up mirrors it, and anyone else keeps a floor so the pixel
+        /// is still painted when neither is visible here.
+        static func mapWeight(_ map: OwnershipMap, shot: Int, column: Int, row: Int, outW: Int, outH: Int) -> Float {
+            let cx = min(map.width - 1, column * map.width / outW)
+            let cy = min(map.height - 1, row * map.height / outH)
+            let c = cy * map.width + cx
+            let owner = Int(map.owner[c])
+            let t = min(1, 0.5 + 0.5 * map.distance[c] / map.featherCells)
+            if owner == shot { return t }
+            if Int(map.neighbour[c]) == shot { return max(0.02, 1 - t) }
+            return 0.02
         }
 
         func render(band: Int) {
@@ -248,7 +273,9 @@ public enum ProjectionStitcher {
                             // here, the neighbour still fills it after normalisation.
                             w *= max(0.02, min(1, 0.5 + dist))
                         }
-                        if nearestFeatherRadians != nil {
+                        if let map {
+                            w *= Self.mapWeight(map, shot: i, column: x, row: y, outW: outW, outH: outH)
+                        } else if nearestFeatherRadians != nil {
                             // Chord length approximates the angle for small angles.
                             let cosine = max(-1, min(1, d.dot(p.projector.forward)))
                             candidates[found] = Candidate(index: i, u: u, v: v, weight: w, angle: (2 * (1 - cosine)).squareRoot())
@@ -344,7 +371,12 @@ public enum ProjectionStitcher {
                 rotations = refined.rotations
                 gains = refined.gains
                 sphereReport = refined.report
-                ownership = .nearest(featherDegrees: options.sphereFeatherDegrees)
+                if options.sphereSeams {
+                    ownership = .map(SphereSeams.compute(shots: shots, rotations: rotations, gains: gains,
+                                                         featherDegrees: options.sphereFeatherDegrees))
+                } else {
+                    ownership = .nearest(featherDegrees: options.sphereFeatherDegrees)
+                }
             }
         }
         progress?(0.1)

@@ -81,21 +81,25 @@ serpentine so the user turns around once: front, down to the nadir, up to
 the zenith, then each column top to bottom and bottom to top in turn. The
 first rooftop sphere took 81 seconds.
 
-A sphere is stitched by `SphereRefinement`: every overlapping pair is
-measured (in parallel across cores), the per-shot corrections are solved
-jointly over the graph, and each pixel is taken from the shot whose optical
-axis is nearest with a two-degree crossfade. That takes about 0.5 s on an
-M4 Mac for 32 shots; the app logs the stitch time under the `stitch`
-category, visible in Console.app filtered on the Surround process.
+A sphere is stitched by `SphereRefinement` and `SphereSeams`: every
+overlapping pair is measured (in parallel across cores) and the per-shot
+corrections are solved jointly over the graph; then, on a low-resolution
+map of the sphere, each boundary between two shots is moved by a minimum
+cut to where the two disagree least, so seams follow edges and a nearby
+object moved by parallax lands wholly in one shot. A two-degree crossfade
+spans each boundary. That takes about 0.9 s on an M4 Mac for 32 shots; the
+app logs the stitch time under the `stitch` category, visible in
+Console.app filtered on the Surround process.
 
 During capture the overlay shows a small map of the sphere, yaw across from
 the front and pitch down, with done targets green and the current one
 yellow, plus a progress bar and "shot n of N · turn k of K · about s left"
 from the pace so far. Before Start it says how many shots the chosen mode
 takes and roughly how long.
-What remains afterwards is parallax: the ground near the nadir, where the
-camera moved half a metre between shots, shows offset tile lines rather
-than a double image. Pivot around the phone, not your body, to reduce it.
+What remains afterwards is parallax where no seam can hide it: repeating
+ground patterns near the nadir, where the camera moved half a metre between
+shots, may still show a jog. Pivot around the phone, not your body, to
+reduce it.
 
 ## First run checklist for M1
 
