@@ -3,9 +3,10 @@
 Working title: **Surround**. An iOS app for capturing and viewing immersive
 photo spheres of scenic viewpoints, built for hiking in Hong Kong.
 
-Status: v0.5. Decisions marked **Confirmed** were agreed during requirements
+Status: v0.6. Decisions marked **Confirmed** were agreed during requirements
 review. Section 8 records every decision and when it was settled. There are
-no open decisions.
+no open decisions. M1 is complete; M2 capture and stitching work and await a
+summit capture against the exit criterion.
 
 ---
 
@@ -42,7 +43,7 @@ after M1.
 | Milestone | Scope | Exit criterion |
 |---|---|---|
 | M1 Cylindrical POC | Guided 360-degree single-ring capture, on-device stitch, gyro viewer, local library, location and heading metadata. | Owner captures three spheres on a real hike and the look-around playback feels closer to being there than the iPhone panorama does. |
-| M2 Full sphere | Multi-ring capture including zenith and nadir, spherical stitch. Viewer and storage unchanged because M1 already uses the spherical format. | A full sphere captured hand-held on a summit stitches with no gap and no seam visible at normal zoom. |
+| M2 Full sphere | Multi-ring capture including zenith and nadir, spherical stitch. Viewer and storage unchanged because M1 already uses the spherical format. Built September 2026: serpentine capture in one turn (81 s for 32 shots), graph alignment and minimum-cut seams; the owner rates the rooftop result 80 of 100. | A full sphere captured hand-held on a summit stitches with no gap and no seam visible at normal zoom. Gap: met. Seams: to be judged on a summit; what remains on the rooftop is parallax on a repeating ground pattern. |
 | M3 Trail polish | P1 items: segment retake, exposure lock, standard export, trips, map view with heading pins, iCloud sync to the iPad, all-orientation viewing, capture time target. | Owner prefers Surround over the built-in Camera panorama for every viewpoint on a hike, finds any past sphere from the map without scrolling the list, and views the day's spheres on the iPad that evening without touching a cable. |
 | M4 Share and release | P2 items and App Store preparation, only if M3 proves the app is useful to others. | Decided later. |
 
@@ -402,7 +403,7 @@ author could verify them:
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Hand-held parallax causes seams on near objects (rocks, railings, your own feet) | Visible stitch errors | Guide the user to rotate about the camera, not their body; keep near objects out of frame; accept that M1 targets distant scenery. The seam finder routes cuts around mismatches; a rotation-only alignment cannot remove them. On the first rooftop capture the camera drifted about half a metre around the ring and the pairwise yaw offsets summed to 15 degrees, all parallax |
+| Hand-held parallax causes seams on near objects (rocks, railings, your own feet) | Visible stitch errors | Guide the user to rotate about the camera, not their body; keep near objects out of frame; accept that M1 targets distant scenery. The seam finders (dynamic programming on a ring, minimum cut on a sphere) route cuts around mismatches; a rotation-only alignment cannot remove them. On the rooftop captures the camera moved 20 to 60 cm between shots; a repeating ground pattern near the nadir still shows a jog where the parallax exceeds the pattern |
 | Featureless sky and sea defeat feature matching | Stitch fails or warps | Seed OpenCV with ARKit poses; fall back to projection-only stitcher for those regions |
 | ARKit tracking degrades in bright, low-texture scenes | Wrong poses | Detect `limited` tracking state, show a warning, fall back to CoreMotion yaw with a magnetometer reference |
 | OpenCV binary size (roughly 20 to 40 MB) and build friction | Slower iteration | Acceptable for a personal app; revisit only before App Store release |
@@ -443,6 +444,8 @@ rest were proposed in v0.3 and v0.4 and confirmed in v0.5.
 | 17 | Sync mechanism | iCloud Drive ubiquity container, not CloudKit through SwiftData. CloudKit forbids the unique constraint the index uses and would make the index, not the files, the source of truth. **Confirmed** in v0.5 (proposed in v0.4). |
 | 18 | Capture on the iPad | Allowed but unsupported: no iPad-specific capture work, portrait only, same as the phone. **Confirmed** in v0.5 (proposed in v0.4). |
 | 19 | iPhone landscape for the viewer | Yes, once the orientation correction in section 6.7 exists. **Confirmed** in v0.5 (proposed in v0.4). |
+| 20 | Stitching engine for M2 | The pure-Swift engine, extended with a graph solver and minimum-cut seams, rather than OpenCV. **Confirmed** in v0.6 by the owner's acceptance of the first full sphere; OpenCV stays the exit plan if a summit capture fails the M2 criterion. |
+| 21 | Sphere capture order | Serpentine, one turn, starting on the horizon front because the first shot locks exposure. **Confirmed** in v0.6 after the ring-by-ring order left the owner dizzy. |
 
 ## 9. Out of scope
 
