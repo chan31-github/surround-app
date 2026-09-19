@@ -62,6 +62,32 @@ nonisolated enum SphereStore {
         return ui
     }
 
+    /// Which thumbnail layout the files on disk were written with. Bumped
+    /// when the layout changes so existing spheres are regenerated once.
+    static let thumbnailFormat = 2
+    private static let thumbnailFormatKey = "thumbnails.format"
+
+    /// Rewrites a sphere's thumbnail from its stitched image.
+    static func regenerateThumbnail(id: UUID) {
+        let f = files(for: id)
+        guard let image = UIImage(contentsOfFile: f.image.path),
+              let thumb = ImageConversion.thumbnailJPEG(from: image, width: 512, height: 256) else { return }
+        try? thumb.write(to: f.thumbnail, options: .atomic)
+        ThumbnailCache.shared.remove(id)
+    }
+
+    /// Regenerates every thumbnail once after the layout changes, off the
+    /// main actor. Returns true when anything was rewritten.
+    @concurrent
+    static func migrateThumbnailsIfNeeded() async -> Bool {
+        guard UserDefaults.standard.integer(forKey: thumbnailFormatKey) < thumbnailFormat else { return false }
+        for meta in storedMetadata() {
+            regenerateThumbnail(id: meta.id)
+        }
+        UserDefaults.standard.set(thumbnailFormat, forKey: thumbnailFormatKey)
+        return true
+    }
+
     /// Every sphere folder that has a metadata file, whatever the index says.
     static func storedMetadata() -> [SphereMetadata] {
         guard let folders = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return [] }
@@ -106,6 +132,9 @@ nonisolated enum SphereStore {
         }
         for entry in scan.missingFromIndex {
             context.insert(SphereRecord(metadata: entry.metadata, fileSizeBytes: entry.fileSizeBytes))
+        }
+        if await migrateThumbnailsIfNeeded() {
+            ThumbnailRefresh.shared.bump()
         }
     }
 

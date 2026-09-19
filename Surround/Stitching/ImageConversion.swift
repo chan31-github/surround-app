@@ -69,13 +69,28 @@ nonisolated enum ImageConversion {
                        intent: .defaultIntent)
     }
 
+    /// Yaw span of the thumbnail window; the pitch span is half of it so the
+    /// window has the card's 2:1 shape and stays within a ring's covered band.
+    static let thumbnailYawSpanDegrees: CGFloat = 90
+
+    /// A thumbnail of the sphere's front: a window `thumbnailYawSpanDegrees`
+    /// wide centred on yaw 0, pitch 0 of the equirectangular image (the
+    /// direction the user faced at Start), rather than the whole sphere
+    /// flattened, which is unreadable at card size.
     static func thumbnailJPEG(from image: UIImage, width: Int, height: Int) -> Data? {
+        guard let cg = image.cgImage else { return nil }
+        let fullW = CGFloat(cg.width)
+        let fullH = CGFloat(cg.height)
+        let cropW = (fullW * thumbnailYawSpanDegrees / 360).rounded()
+        let cropH = (fullH * (thumbnailYawSpanDegrees / 2) / 180).rounded()
+        let crop = CGRect(x: ((fullW - cropW) / 2).rounded(), y: ((fullH - cropH) / 2).rounded(), width: cropW, height: cropH)
+        let source = cg.cropping(to: crop).map { UIImage(cgImage: $0) } ?? image
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         let size = CGSize(width: width, height: height)
         let renderer = UIGraphicsImageRenderer(size: size, format: format)
         let thumb = renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: size))
+            source.draw(in: CGRect(origin: .zero, size: size))
         }
         return thumb.jpegData(compressionQuality: 0.8)
     }

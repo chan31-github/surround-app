@@ -224,7 +224,7 @@ Documents/
   spheres/
     <uuid>/
       sphere.jpg          equirectangular, up to 8192 x 4096
-      thumb.jpg           512 x 256
+      thumb.jpg           512 x 256, a 90 x 45 degree window on the front
       metadata.json       see below
       shots/              source stills and their poses, kept for re-stitch
         capture.json      manifest: front yaw, plan step, all poses
