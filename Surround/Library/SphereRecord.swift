@@ -22,6 +22,8 @@ final class SphereRecord {
     var coveredPitchMaxDegrees: Double?
     var shotCount: Int
     var fileSizeBytes: Int
+    /// Bytes of the source stills, the part that can be reclaimed.
+    var sourceShotsBytes: Int = 0
     var tags: [String]
     /// Modification date of metadata.json when this row last read it, so a
     /// change synced from another device can be noticed and applied.
@@ -42,7 +44,17 @@ final class SphereRecord {
         coveredPitchMaxDegrees = metadata.coveredPitchMaxDegrees.map(Double.init)
         shotCount = metadata.shotCount
         self.fileSizeBytes = fileSizeBytes
+        sourceShotsBytes = SphereStore.sourceShotsSize(id: metadata.id)
         tags = metadata.tags
+    }
+
+    var hasSourceShots: Bool { sourceShotsBytes > 0 }
+
+    /// Removes this sphere's source stills and updates the sizes.
+    func deleteSourceShots() {
+        SphereStore.deleteSourceShots(id: id)
+        sourceShotsBytes = 0
+        fileSizeBytes = SphereStore.directorySize(SphereStore.files(for: id).directory)
     }
 
     /// Refreshes the row from a metadata file that changed under it.

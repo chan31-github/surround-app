@@ -218,6 +218,14 @@ private struct SphereInfoView: View {
                     LabeledContent("Covered pitch", value: String(format: "%.0f° to %.0f°", lo, hi))
                 }
                 LabeledContent("Size", value: ByteCountFormatter.string(fromByteCount: Int64(sphere.fileSizeBytes), countStyle: .file))
+                if sphere.hasSourceShots {
+                    LabeledContent("Source shots", value: ByteCountFormatter.string(fromByteCount: Int64(sphere.sourceShotsBytes), countStyle: .file))
+                    Button("Delete source shots", systemImage: "trash.slash", role: .destructive) {
+                        sphere.deleteSourceShots()
+                    }
+                } else {
+                    LabeledContent("Source shots", value: "Removed")
+                }
             }
             .navigationTitle("Details")
             .navigationBarTitleDisplayMode(.inline)

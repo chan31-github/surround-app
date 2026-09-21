@@ -152,6 +152,29 @@ ground patterns near the nadir, where the camera moved half a metre between
 shots, may still show a jog. Pivot around the phone, not your body, to
 reduce it.
 
+## Storage
+
+Stills are stored as HEIC no larger than 2400 px on the long side, about
+1 MB each; the stitcher never read more than that from the 12-megapixel
+originals. Captures from before this change are re-encoded once at launch
+("Shrinking source shots" in the filter menu), which returned about 80 % of
+the space on the owner's phone. The menu shows the total and the part in
+source shots, with "Remove all source shots"; the details sheet has the
+same per sphere; "Delete source shots when keeping" drops them at Keep.
+Source shots exist only to stitch a sphere again with a future engine, so
+removing them costs nothing today. The Mac harness reads either encoding.
+
+## Retake
+
+On the review screen, Retake shows the stills of the capture. Pick the one
+to redo; the capture screen returns with that target, the session having
+resumed without a tracking reset. Capture waits for tracking to read normal
+(ARKit relocalises against what it mapped a moment ago), then the shot is
+taken with the exposure and white balance the first shot locked, the file
+is replaced and the sphere is stitched again. Cancel returns to the review
+unchanged. Stay where you took the sphere: within a step for distant
+scenery, closer if that segment has anything nearby.
+
 ## First run checklist for M1
 
 1. On the capture screen, hold the phone upright and level. The debug line

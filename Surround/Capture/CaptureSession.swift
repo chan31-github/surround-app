@@ -81,6 +81,19 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     @ObservationIgnored private let evaluator = AlignmentEvaluator()
     @ObservationIgnored private var shotsDirectory: URL?
     @ObservationIgnored private let haptics = UIImpactFeedbackGenerator(style: .medium)
+    @ObservationIgnored private var configuration: ARWorldTrackingConfiguration?
+
+    /// The camera settings the first shot locked, re-applied for a retake so
+    /// the new still matches the others even if the light has shifted.
+    private struct LockedCamera {
+        let exposureDuration: CMTime
+        let iso: Float
+        let whiteBalanceGains: AVCaptureDevice.WhiteBalanceGains
+    }
+    @ObservationIgnored private var lockedCamera: LockedCamera?
+
+    /// Index of the shot being retaken from the review screen, while it is.
+    private(set) var retakingIndex: Int?
 
     static var isSupported: Bool { ARWorldTrackingConfiguration.isSupported }
 
@@ -101,6 +114,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             highResolutionSupported = true
         }
         session.delegate = self
+        configuration = config
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
         shots = []
         plan = nil
@@ -143,6 +157,34 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     func stop() {
         session.pause()
         if phase != .finished { transition(to: .idle) }
+    }
+
+    /// Retakes one shot of a finished capture. The session resumes without
+    /// resetting tracking, so the world frame the other shots were recorded
+    /// in is kept (ARKit relocalises against what it mapped; capture waits
+    /// for tracking to be normal again), and the exposure and white balance
+    /// the first shot locked are re-applied. The new still replaces the old
+    /// file; the caller re-stitches when the phase returns to finished.
+    func retake(index: Int) {
+        guard phase == .finished, let plan, index < plan.targets.count, index < shots.count,
+              let configuration else { return }
+        retakingIndex = index
+        currentTargetIndex = index
+        errorMessage = nil
+        evaluator.reset()
+        session.run(configuration, options: [])
+        applyLockedCamera()
+        haptics.prepare()
+        transition(to: .capturing)
+    }
+
+    /// Abandons a retake and returns to the finished capture as it was.
+    func cancelRetake() {
+        guard retakingIndex != nil else { return }
+        retakingIndex = nil
+        isCapturingFrame = false
+        session.pause()
+        transition(to: .finished)
     }
 
     /// How many shots `kind` would take with the current camera, for setting
@@ -241,6 +283,14 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         if intrinsics.width != width || intrinsics.height != height {
             intrinsics = intrinsics.scaled(toWidth: width, height: height)
         }
+        // The still is stored no larger than this on its long side; the
+        // intrinsics describe the stored pixels.
+        let longest = max(width, height)
+        if longest > ImageConversion.stillMaxPixelSize {
+            let scale = Double(ImageConversion.stillMaxPixelSize) / Double(longest)
+            intrinsics = intrinsics.scaled(toWidth: Int((Double(width) * scale).rounded(.down)),
+                                           height: Int((Double(height) * scale).rounded(.down)))
+        }
         // Exposure values are informational; ARKit can report NaN for them.
         let exposureDuration = frame.camera.exposureDuration.isFinite ? frame.camera.exposureDuration : nil
         let exposureOffset = frame.camera.exposureOffset.isFinite ? frame.camera.exposureOffset : nil
@@ -258,7 +308,8 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             trackingWarning = "Tracking not ready, hold still"
             return
         }
-        let imageURL = directory.appendingPathComponent(pose.imageFileName)
+        let heicURL = directory.appendingPathComponent(pose.imageFileName)
+        let jpegURL = directory.appendingPathComponent(pose.legacyImageFileName)
         let poseURL = directory.appendingPathComponent(pose.poseFileName)
 
         // Encode off the main actor. Only the pixel buffer is retained, not the
@@ -266,28 +317,34 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         // another thread, which the compiler cannot know.
         nonisolated(unsafe) let pixels = buffer
         Task { [weak self] in
-            let failure = await Self.encode(pixels, pose: pose, imageURL: imageURL, poseURL: poseURL, index: index)
-            self?.finishStoring(CapturedShot(fileURL: imageURL, pose: pose), failure: failure)
+            let result = await Self.encode(pixels, pose: pose, heicURL: heicURL, jpegURL: jpegURL, poseURL: poseURL, index: index)
+            self?.finishStoring(CapturedShot(fileURL: result.imageURL, pose: pose), failure: result.failure)
         }
     }
 
-    /// Writes the still and its pose file; returns a message on failure.
+    /// Writes the still (HEIC, or JPEG if HEIC encoding was refused) and its
+    /// pose file; returns a message on failure. A retake removes whichever
+    /// encoding the old still had, so only one file remains.
     @concurrent
-    private nonisolated static func encode(_ buffer: CVPixelBuffer, pose: ShotPose, imageURL: URL, poseURL: URL, index: Int) async -> String? {
-        guard let data = ImageConversion.jpegData(from: buffer) else {
-            return "Could not encode the image for shot \(index + 1)."
+    private nonisolated static func encode(_ buffer: CVPixelBuffer, pose: ShotPose, heicURL: URL, jpegURL: URL, poseURL: URL,
+                                           index: Int) async -> (imageURL: URL, failure: String?) {
+        guard let still = ImageConversion.encodeStill(from: buffer) else {
+            return (heicURL, "Could not encode the image for shot \(index + 1).")
         }
+        let imageURL = still.isHEIC ? heicURL : jpegURL
+        let other = still.isHEIC ? jpegURL : heicURL
         do {
-            try data.write(to: imageURL, options: .atomic)
+            try still.data.write(to: imageURL, options: .atomic)
+            try? FileManager.default.removeItem(at: other)
         } catch {
-            return "Saving image for shot \(index + 1): \(error.localizedDescription)"
+            return (imageURL, "Saving image for shot \(index + 1): \(error.localizedDescription)")
         }
         do {
             try MetadataCoding.encode(pose).write(to: poseURL, options: .atomic)
         } catch {
-            return "Saving pose for shot \(index + 1): \(error.localizedDescription)"
+            return (imageURL, "Saving pose for shot \(index + 1): \(error.localizedDescription)")
         }
-        return nil
+        return (imageURL, nil)
     }
 
     private func finishStoring(_ shot: CapturedShot, failure: String?) {
@@ -296,8 +353,15 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             fail(failure)
             return
         }
-        shots.append(shot)
         haptics.impactOccurred()
+        if let retaking = retakingIndex {
+            shots[retaking] = shot
+            retakingIndex = nil
+            session.pause()
+            transition(to: .finished)
+            return
+        }
+        shots.append(shot)
         if shots.count == 1, lockExposureAfterFirstShot {
             lockExposure()
         }
@@ -318,9 +382,41 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             if device.isWhiteBalanceModeSupported(.locked) {
                 device.whiteBalanceMode = .locked
             }
+            lockedCamera = LockedCamera(exposureDuration: device.exposureDuration,
+                                        iso: device.iso,
+                                        whiteBalanceGains: device.deviceWhiteBalanceGains)
             device.unlockForConfiguration()
         } catch {
             // Exposure lock is best effort; the capture still works without it.
+        }
+    }
+
+    /// Re-applies the first shot's exposure and white balance after the
+    /// session restarts for a retake. Best effort, like the lock itself.
+    private func applyLockedCamera() {
+        guard let locked = lockedCamera,
+              let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else { return }
+        do {
+            try device.lockForConfiguration()
+            if device.isExposureModeSupported(.custom) {
+                let range = device.activeFormat.minExposureDuration...device.activeFormat.maxExposureDuration
+                let duration = min(max(locked.exposureDuration, range.lowerBound), range.upperBound)
+                let iso = min(max(locked.iso, device.activeFormat.minISO), device.activeFormat.maxISO)
+                device.setExposureModeCustom(duration: duration, iso: iso)
+            } else if device.isExposureModeSupported(.locked) {
+                device.exposureMode = .locked
+            }
+            if device.isWhiteBalanceModeSupported(.locked) {
+                var gains = locked.whiteBalanceGains
+                let maxGain = device.maxWhiteBalanceGain
+                gains.redGain = min(max(gains.redGain, 1), maxGain)
+                gains.greenGain = min(max(gains.greenGain, 1), maxGain)
+                gains.blueGain = min(max(gains.blueGain, 1), maxGain)
+                device.setWhiteBalanceModeLocked(with: gains)
+            }
+            device.unlockForConfiguration()
+        } catch {
+            // Falls back to whatever exposure the session chose.
         }
     }
 

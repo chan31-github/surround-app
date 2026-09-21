@@ -30,7 +30,8 @@ final class MetadataTests: XCTestCase {
         let back = try MetadataCoding.decode(ShotPose.self, from: data)
         XCTAssertEqual(back, pose)
         XCTAssertEqual(back.cameraPose.yawDegrees, 45, accuracy: 1e-3)
-        XCTAssertEqual(back.imageFileName, "003.jpg")
+        XCTAssertEqual(back.imageFileName, "003.heic")
+        XCTAssertEqual(back.legacyImageFileName, "003.jpg")
     }
 
     func testIntrinsicsScalingKeepsFOV() {

@@ -66,6 +66,22 @@ final class CaptureViewModel {
         capture.beginCapture(kind: kind)
     }
 
+    /// Retakes one shot from the review screen; the session's phase change
+    /// back to finished triggers the re-stitch.
+    func retake(index: Int) {
+        guard case .review = stage else { return }
+        capture.retake(index: index)
+    }
+
+    func cancelRetake() {
+        capture.cancelRetake()
+    }
+
+    /// The stored stills, for choosing which one to retake.
+    var shotFiles: [(index: Int, url: URL, pitchDegrees: Float)] {
+        capture.shots.map { ($0.pose.index, $0.fileURL, $0.pose.targetPitchDegrees ?? 0) }
+    }
+
     /// Stops everything and removes the sphere's folder unless it was kept.
     func teardown() {
         UIApplication.shared.isIdleTimerDisabled = false
@@ -76,8 +92,13 @@ final class CaptureViewModel {
         }
     }
 
+    static let deleteSourcesOnKeepKey = "capture.deleteSourcesOnKeep"
+
     func keep(in context: ModelContext) {
         guard let metadata, !kept else { return }
+        if UserDefaults.standard.bool(forKey: Self.deleteSourcesOnKeepKey) {
+            SphereStore.deleteSourceShots(id: sphereID)
+        }
         let record = SphereRecord(metadata: metadata, fileSizeBytes: SphereStore.directorySize(files.directory))
         context.insert(record)
         kept = true

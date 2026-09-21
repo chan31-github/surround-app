@@ -126,6 +126,73 @@ nonisolated enum SphereStore {
         return ui
     }
 
+    // MARK: Source shots
+
+    /// Bytes of the still image files in a sphere's shots folder.
+    static func sourceShotsSize(id: UUID) -> Int {
+        let shots = files(for: id).shots
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: shots, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        return entries.filter { Self.isStill($0) }
+            .reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+    }
+
+    /// Deletes the stills but keeps the manifest and pose files, so the
+    /// capture's geometry stays on record.
+    static func deleteSourceShots(id: UUID) {
+        let shots = files(for: id).shots
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: shots, includingPropertiesForKeys: nil) else { return }
+        for entry in entries where isStill(entry) {
+            try? FileManager.default.removeItem(at: entry)
+        }
+    }
+
+    static func isStill(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return ext == "heic" || ext == "jpg"
+    }
+
+    /// Which still encoding the files on disk were written with. Stills were
+    /// full-size JPEGs (4.7 MB each) until September 2026; format 2 is HEIC
+    /// at 2400 px. Existing stills are re-encoded once, in the background.
+    static let stillFormat = 2
+    private static let stillFormatKey = "stills.format"
+
+    /// Re-encodes every legacy JPEG still as a smaller HEIC, reporting
+    /// progress, and returns the bytes reclaimed. Pose files keep the
+    /// original intrinsics; the stitcher rescales them to whatever size it
+    /// loads, so they stay correct.
+    @concurrent
+    static func migrateStillsIfNeeded(progress: @escaping @Sendable (Int, Int) -> Void) async -> Int {
+        guard UserDefaults.standard.integer(forKey: stillFormatKey) < stillFormat else { return 0 }
+        var jpegs: [URL] = []
+        for meta in storedMetadata() {
+            let shots = files(for: meta.id).shots
+            guard let entries = try? FileManager.default.contentsOfDirectory(at: shots, includingPropertiesForKeys: nil) else { continue }
+            jpegs.append(contentsOf: entries.filter { $0.pathExtension.lowercased() == "jpg" })
+        }
+        var reclaimed = 0
+        var failures = 0
+        for (k, jpeg) in jpegs.enumerated() {
+            progress(k, jpegs.count)
+            let heic = jpeg.deletingPathExtension().appendingPathExtension("heic")
+            let before = (try? jpeg.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            do {
+                let after = try ImageConversion.reencodeStill(jpeg: jpeg, to: heic)
+                try FileManager.default.removeItem(at: jpeg)
+                reclaimed += before - after
+            } catch {
+                try? FileManager.default.removeItem(at: heic)
+                failures += 1
+            }
+        }
+        progress(jpegs.count, jpegs.count)
+        // Only mark done when every still converted, so a failure is retried.
+        if failures == 0 {
+            UserDefaults.standard.set(stillFormat, forKey: stillFormatKey)
+        }
+        return reclaimed
+    }
+
     /// Which thumbnail layout the files on disk were written with. Bumped
     /// when the layout changes so existing spheres are regenerated once.
     static let thumbnailFormat = 2
@@ -186,6 +253,9 @@ nonisolated enum SphereStore {
         /// Rows whose metadata file changed since they were indexed.
         var changed: [StoredSphere]
         var tripNames: [String: String]
+        /// Current folder and source sizes for every sphere on disk, so rows
+        /// track deletions and re-encodes.
+        var sizes: [UUID: (total: Int, sources: Int)]
     }
 
     /// Reads every metadata file and sizes the folders the index lacks. Runs
@@ -195,15 +265,19 @@ nonisolated enum SphereStore {
         let stored = storedSpheres()
         var missing: [(sphere: StoredSphere, fileSizeBytes: Int)] = []
         var changed: [StoredSphere] = []
+        var sizes: [UUID: (total: Int, sources: Int)] = [:]
         for sphere in stored {
-            if let indexedAt = indexed[sphere.metadata.id] {
+            let id = sphere.metadata.id
+            let total = directorySize(files(for: id).directory)
+            sizes[id] = (total, sourceShotsSize(id: id))
+            if let indexedAt = indexed[id] {
                 if let modified = sphere.metadataModifiedAt, modified != indexedAt { changed.append(sphere) }
             } else {
-                missing.append((sphere, directorySize(files(for: sphere.metadata.id).directory)))
+                missing.append((sphere, total))
             }
         }
         return IndexScan(onDisk: Set(stored.map { $0.metadata.id }), missingFromIndex: missing,
-                         changed: changed, tripNames: loadTripNames())
+                         changed: changed, tripNames: loadTripNames(), sizes: sizes)
     }
 
     /// Makes the index match the folders: files are the source of truth, so a
@@ -234,6 +308,11 @@ nonisolated enum SphereStore {
         }
         for sphere in scan.changed {
             byID[sphere.metadata.id]?.apply(sphere.metadata, modifiedAt: sphere.metadataModifiedAt)
+        }
+        for (id, size) in scan.sizes {
+            guard let record = byID[id] else { continue }
+            if record.fileSizeBytes != size.total { record.fileSizeBytes = size.total }
+            if record.sourceShotsBytes != size.sources { record.sourceShotsBytes = size.sources }
         }
 
         // Trip names: the file wins when it exists; rows the file lacks go.

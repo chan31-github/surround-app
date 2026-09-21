@@ -1,24 +1,80 @@
 import CoreGraphics
 import CoreImage
+import CoreImage.CIFilterBuiltins
 import CoreVideo
 import Foundation
 import ImageIO
 import SurroundCore
 import UIKit
+import UniformTypeIdentifiers
 
 /// Bridges between platform image types and the core package's RGBAImage.
 /// Called from background encoding and stitching as well as the UI.
 nonisolated enum ImageConversion {
     private static let ciContext = CIContext(options: [.cacheIntermediates: false])
 
-    /// Encodes a camera pixel buffer (any format CoreImage understands) as JPEG.
-    /// The image keeps the sensor's landscape orientation; no orientation tag is written.
-    static func jpegData(from pixelBuffer: CVPixelBuffer, quality: CGFloat = 0.92) -> Data? {
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        let options: [CIImageRepresentationOption: Any] = [
-            CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): quality,
+    /// Longest side of a stored still. The stitcher reads stills at about 1.5
+    /// times the output's needs, 1144 px across for a 4096-wide sphere and
+    /// 2288 for 8192, so 12-megapixel originals were never used at full size
+    /// and cost 4.7 MB each; at this size in HEIC a still is about 0.6 MB.
+    static let stillMaxPixelSize = 2400
+    static let stillQuality: CGFloat = 0.85
+
+    struct EncodedStill {
+        let data: Data
+        let width: Int
+        let height: Int
+        /// False when HEIC encoding was refused and the still is a JPEG.
+        let isHEIC: Bool
+    }
+
+    /// Encodes a camera pixel buffer as a still no larger than
+    /// `stillMaxPixelSize` on its long side: HEIC through ImageIO, the same
+    /// writer the migration uses, or JPEG if the HEIC encoder refuses, so a
+    /// capture never fails for want of an encoder. The image keeps the
+    /// sensor's landscape orientation; no orientation tag is written.
+    static func encodeStill(from pixelBuffer: CVPixelBuffer) -> EncodedStill? {
+        var image = CIImage(cvPixelBuffer: pixelBuffer)
+        let longest = max(image.extent.width, image.extent.height)
+        if longest > CGFloat(stillMaxPixelSize) {
+            let scale = CGFloat(stillMaxPixelSize) / longest
+            let filter = CIFilter.lanczosScaleTransform()
+            filter.inputImage = image
+            filter.scale = Float(scale)
+            filter.aspectRatio = 1
+            image = filter.outputImage ?? image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
+        let extent = CGRect(x: 0, y: 0, width: image.extent.width.rounded(.down), height: image.extent.height.rounded(.down))
+        guard let cg = ciContext.createCGImage(image, from: extent) else { return nil }
+        let quality = [kCGImageDestinationLossyCompressionQuality: stillQuality] as CFDictionary
+        for (type, isHEIC) in [(UTType.heic, true), (UTType.jpeg, false)] {
+            let data = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil) else { continue }
+            CGImageDestinationAddImage(destination, cg, quality)
+            if CGImageDestinationFinalize(destination), data.length > 0 {
+                return EncodedStill(data: data as Data, width: cg.width, height: cg.height, isHEIC: isHEIC)
+            }
+        }
+        return nil
+    }
+
+    /// Re-encodes a stored full-size JPEG still as a HEIC at the stored size,
+    /// for captures made before stills were stored small. Returns the new
+    /// file's size in bytes.
+    static func reencodeStill(jpeg: URL, to heic: URL) throws -> Int {
+        guard let source = CGImageSourceCreateWithURL(jpeg as CFURL, nil) else { throw SphereStoreError.imageEncoding }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: stillMaxPixelSize,
+            kCGImageSourceCreateThumbnailWithTransform: false,
         ]
-        return ciContext.jpegRepresentation(of: image, colorSpace: CGColorSpaceCreateDeviceRGB(), options: options)
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              let destination = CGImageDestinationCreateWithURL(heic as CFURL, UTType.heic.identifier as CFString, 1, nil) else {
+            throw SphereStoreError.imageEncoding
+        }
+        CGImageDestinationAddImage(destination, cg, [kCGImageDestinationLossyCompressionQuality: stillQuality] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw SphereStoreError.imageEncoding }
+        return (try? heic.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
     }
 
     /// Decodes an image file into RGBA, downscaled so its longer side is at most `maxPixelSize`.

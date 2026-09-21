@@ -45,7 +45,19 @@ public struct ShotPose: Codable, Equatable, Sendable {
             && intrinsics.fx > 0 && intrinsics.fy > 0
     }
 
-    public var imageFileName: String { String(format: "%03d.jpg", index) }
+    /// Stills are HEIC at a reduced size (see the app's ImageConversion);
+    /// captures before September 2026 stored full-size JPEGs under
+    /// `legacyImageFileName` until they were re-encoded.
+    public var imageFileName: String { String(format: "%03d.heic", index) }
+    public var legacyImageFileName: String { String(format: "%03d.jpg", index) }
+
+    /// The still's URL inside `directory`, whichever encoding it has.
+    public func imageURL(in directory: URL) -> URL {
+        let current = directory.appendingPathComponent(imageFileName)
+        if FileManager.default.fileExists(atPath: current.path) { return current }
+        let legacy = directory.appendingPathComponent(legacyImageFileName)
+        return FileManager.default.fileExists(atPath: legacy.path) ? legacy : current
+    }
     public var poseFileName: String { String(format: "%03d.json", index) }
 }
 

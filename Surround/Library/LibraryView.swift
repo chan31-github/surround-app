@@ -44,6 +44,8 @@ struct LibraryView: View {
     @State private var placementError: String?
     @State private var navigation = LibraryNavigation()
     @State private var mapFocus: MapFocus?
+    @State private var confirmRemoveSources = false
+    @AppStorage(CaptureViewModel.deleteSourcesOnKeepKey) private var deleteSourcesOnKeep = false
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var columnVisibility = NavigationSplitViewVisibility.automatic
@@ -111,6 +113,12 @@ struct LibraryView: View {
                 .task {
                     SyncCoordinator.shared.start()
                     await SphereStore.reconcileIndex(in: context)
+                    // Re-encode legacy full-size stills, once, then refresh sizes.
+                    let reclaimed = await SphereStore.migrateStillsIfNeeded { done, total in
+                        Task { @MainActor in StorageStatus.shared.update(done: done, total: total) }
+                    }
+                    StorageStatus.shared.finished(reclaimed: reclaimed)
+                    if reclaimed > 0 { await SphereStore.reconcileIndex(in: context) }
                 }
                 .task(id: SyncCoordinator.shared.changeCount) {
                     // Spheres arriving from another device, or edits to them.
@@ -149,6 +157,13 @@ struct LibraryView: View {
                         path.append(sphere)
                     }
                     .presentationDetents([.medium, .large])
+                }
+                .confirmationDialog("Remove source shots from every sphere?", isPresented: $confirmRemoveSources, titleVisibility: .visible) {
+                    Button("Remove \(ByteCountFormatter.string(fromByteCount: Int64(sourceBytes), countStyle: .file))", role: .destructive) {
+                        for sphere in spheres where sphere.hasSourceShots { sphere.deleteSourceShots() }
+                    }
+                } message: {
+                    Text("The stitched spheres stay. Source shots are only needed to stitch a sphere again with a future engine.")
                 }
                 .alert("Could not save the position", isPresented: Binding(get: { placementError != nil }, set: { if !$0 { placementError = nil } })) {
                     Button("OK", role: .cancel) {}
@@ -271,11 +286,33 @@ struct LibraryView: View {
                 }
             }
             Divider()
+            Text(storageStatus)
+            if spheres.contains(where: { $0.hasSourceShots }) {
+                Button("Remove all source shots", systemImage: "trash.slash", role: .destructive) {
+                    confirmRemoveSources = true
+                }
+            }
+            Toggle("Delete source shots when keeping", systemImage: "camera.badge.ellipsis", isOn: $deleteSourcesOnKeep)
+            Divider()
             Text(syncStatus)
             Text(BuildInfo.summary)
         } label: {
             Label("Filter", systemImage: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
+    }
+
+    private var sourceBytes: Int { spheres.reduce(0) { $0 + $1.sourceShotsBytes } }
+
+    private var storageStatus: String {
+        if let m = StorageStatus.shared.migrating {
+            return "Shrinking source shots: \(m.done) of \(m.total)"
+        }
+        let total = spheres.reduce(0) { $0 + $1.fileSizeBytes }
+        func fmt(_ bytes: Int) -> String { ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file) }
+        var line = "Storage: \(fmt(total)) in \(spheres.count) spheres"
+        if sourceBytes > 0 { line += ", \(fmt(sourceBytes)) in source shots" }
+        if StorageStatus.shared.reclaimedBytes > 0 { line += " · freed \(fmt(StorageStatus.shared.reclaimedBytes))" }
+        return line
     }
 
     private var syncStatus: String {

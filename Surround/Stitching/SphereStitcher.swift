@@ -52,7 +52,8 @@ nonisolated struct ProjectionSphereStitcher: SphereStitcher {
             let fovLong = shot.pose.intrinsics.fovAcrossWidthDegrees
             let needed = Int(Float(job.outputWidth) * fovLong / 360 * 1.5)
             let maxPixelSize = min(4096, max(800, needed))
-            guard let image = ImageConversion.loadRGBA(from: shot.imageURL, maxPixelSize: maxPixelSize) else {
+            let url = shot.pose.imageURL(in: shot.imageURL.deletingLastPathComponent())
+            guard let image = ImageConversion.loadRGBA(from: url, maxPixelSize: maxPixelSize) else {
                 throw StitchError.cannotLoad(shot.imageURL)
             }
             let intrinsics = shot.pose.intrinsics.scaled(toWidth: image.width, height: image.height)

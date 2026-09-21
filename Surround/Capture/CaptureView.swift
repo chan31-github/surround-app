@@ -1,3 +1,4 @@
+import ImageIO
 import SwiftData
 import SwiftUI
 import SurroundCore
@@ -39,7 +40,14 @@ struct CaptureView: View {
                     CaptureOverlay(capture: model.capture,
                                    planKind: planKind,
                                    onStart: { model.beginCapture(kind: planKind.wrappedValue) },
-                                   onCancel: { dismiss() })
+                                   onCancel: {
+                                       // Cancelling a retake returns to the review, not the library.
+                                       if model.capture.retakingIndex != nil {
+                                           model.cancelRetake()
+                                       } else {
+                                           dismiss()
+                                       }
+                                   })
                 }
             case .stitching(let fraction):
                 StitchingView(fraction: fraction, shotCount: model.capture.shots.count)
@@ -47,10 +55,12 @@ struct CaptureView: View {
                 if let image = model.reviewImage {
                     ReviewView(image: image,
                                metadata: model.metadata,
+                               shots: model.shotFiles,
                                onKeep: {
                                    model.keep(in: context)
                                    dismiss()
                                },
+                               onRetake: { model.retake(index: $0) },
                                onDiscard: { dismiss() })
                 }
             case .failed(let message):
@@ -104,8 +114,11 @@ private struct StitchingView: View {
 private struct ReviewView: View {
     let image: UIImage
     let metadata: SphereMetadata?
+    let shots: [(index: Int, url: URL, pitchDegrees: Float)]
     let onKeep: () -> Void
+    let onRetake: (Int) -> Void
     let onDiscard: () -> Void
+    @State private var showRetake = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -126,6 +139,13 @@ private struct ReviewView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
+                    Button {
+                        showRetake = true
+                    } label: {
+                        Label("Retake", systemImage: "arrow.counterclockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
                     Button(action: onKeep) {
                         Label("Keep", systemImage: "checkmark")
                             .frame(maxWidth: .infinity)
@@ -137,6 +157,108 @@ private struct ReviewView: View {
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             .padding()
         }
+        .sheet(isPresented: $showRetake) {
+            RetakePicker(shots: shots) { index in
+                showRetake = false
+                onRetake(index)
+            }
+            .presentationDetents([.large])
+        }
+    }
+}
+
+/// The stills of the capture, so the one with the passer-by in it can be
+/// picked out and retaken. Retaking works while you are still standing
+/// where you took the sphere; the exposure lock and the tracking frame are
+/// kept, so the new shot matches the others.
+private struct RetakePicker: View {
+    let shots: [(index: Int, url: URL, pitchDegrees: Float)]
+    let onPick: (Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 14) {
+                    ForEach(shots, id: \.index) { shot in
+                        Button {
+                            onPick(shot.index)
+                        } label: {
+                            VStack(spacing: 4) {
+                                ShotStill(url: shot.url)
+                                    .aspectRatio(3.0 / 4.0, contentMode: .fit)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                Text("\(shot.index + 1) · \(Self.pitchName(shot.pitchDegrees))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding()
+                Text("Stay where you took the sphere. The chosen shot is taken again with the same exposure and replaces the old one, then the sphere is stitched again.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .padding(.bottom)
+            }
+            .navigationTitle("Retake which shot?")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    static func pitchName(_ pitch: Float) -> String {
+        switch pitch {
+        case 89...: return "zenith"
+        case ...(-89): return "nadir"
+        case 10...: return "up"
+        case ...(-10): return "down"
+        default: return "level"
+        }
+    }
+}
+
+/// A stored still, decoded small and rotated upright: stills are saved in the
+/// sensor's landscape orientation, and the phone was held in portrait with
+/// the sensor's +X (image right) pointing down the screen.
+private struct ShotStill: View {
+    let url: URL
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            Color.secondary.opacity(0.2)
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ProgressView()
+            }
+        }
+        .task(id: url) {
+            image = await Self.decode(url)
+        }
+    }
+
+    @concurrent
+    private static func decode(_ url: URL) async -> UIImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 320,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        // Sensor landscape to screen portrait: rotate 90 degrees clockwise.
+        return UIImage(cgImage: cg, scale: 1, orientation: .right)
     }
 }
 

@@ -127,6 +127,9 @@ struct CaptureOverlay: View {
 
     private func progressText(_ plan: CapturePlan) -> String {
         let total = plan.targets.count
+        if let retaking = capture.retakingIndex {
+            return "Retaking shot \(retaking + 1) of \(total) · stand where you took it"
+        }
         let done = capture.shots.count
         var parts = ["Shot \(min(capture.currentTargetIndex + 1, total)) of \(total)"]
         if plan.yawStepDegrees > 0, capture.currentTargetIndex < total, let start = plan.targets.first {
@@ -194,8 +197,8 @@ private struct CoverageMap: View {
     }
 
     private func colour(_ t: CaptureTarget) -> Color {
-        if t.id < done { return .green }
         if t.id == current { return .yellow }
+        if t.id < done { return .green }
         return .white.opacity(0.35)
     }
 

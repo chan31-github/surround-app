@@ -66,7 +66,7 @@ have, **P3** later or never. IDs are stable for reference in issues.
 
 | ID | Requirement | Acceptance criteria |
 |---|---|---|
-| F6 | **Segment retake.** Any individual shot can be retaken without restarting the sphere. | The coverage view lets the user tap a segment to retake it. Re-stitching uses the replaced shot. |
+| F6 | **Segment retake.** Any individual shot can be retaken without restarting the sphere, before it is kept. | The review screen lists the stills; picking one retakes it in the same session with the same exposure. Re-stitching uses the replaced shot. Done in v0.6. |
 | F7 | **Exposure handling.** Exposure and white balance are locked after the first shot so the sphere has uniform brightness. Bracketed capture is a later option. | Sky and shaded terrain in the same sphere are both legible. The lock value is chosen from a metered reference frame at the brightest expected direction, or from the first shot, selectable in settings. |
 | F8 | **Standard export.** Export as an equirectangular JPEG with XMP photo sphere (GPano) metadata. Partial coverage (cylindrical) is expressed via the GPano cropped-area fields. | The exported file opens as a 360 photo in Google Photos and Facebook, and as a cropped panorama in the iOS Photos app. |
 | F9 | **Trips.** Spheres captured on the same calendar day form a trip automatically. A trip can be renamed (for example "MacLehose section 4"), and a sphere can carry free-text tags. The library and the map can be filtered by trip. | No manual step is needed for a sphere to belong to a trip. Renaming a trip is one tap from the library or the map. Tags autocomplete from previous tags. |
@@ -103,7 +103,7 @@ have, **P3** later or never. IDs are stable for reference in issues.
 |---|---|
 | N1 | **Offline first.** Every P0 and P1 feature works with no network. |
 | N2 | **Battery.** A capture session, including stitch, uses under 3 percent battery on a recent iPhone. Camera and motion sensors are released the moment capture ends. |
-| N3 | **Storage.** A stitched sphere plus its source shots stays under 60 MB. The user can see and reclaim space per sphere. |
+| N3 | **Storage.** A stitched sphere plus its source shots stays under 60 MB. The user can see and reclaim space per sphere. In v0.6: stills are HEIC at 2400 px (about 1 MB each, 12 MB per ring, 35 MB per sphere; they were 4.7 MB each); the library shows the total and the part in source shots; source shots can be removed per sphere, for all spheres, or automatically on Keep (off by default). |
 | N4 | **Outdoor usability.** Capture screen is legible in direct sunlight (high-contrast overlays, large targets). All capture actions are possible with one thumb. |
 | N5 | **Privacy.** No data leaves the device unless the user exports or shares. No analytics in M1 to M3. Location is stored only with the user's own spheres, and the map view never sends sphere positions anywhere: the base map is fetched by region, the pins are drawn locally. |
 | N6 | **Maintainability.** Stitching, viewer rendering, and storage are behind protocols so each can be replaced. Every third-party dependency has a stated reason and an exit plan. |
@@ -182,7 +182,14 @@ covered range recorded in metadata. This means:
    disk immediately with its pose so memory stays flat.
 5. After the last target the session stops and stitching runs with a
    progress bar. The result opens in the viewer with the covered pitch range
-   shown. Buttons: Keep, Discard. Retake of a single segment is M3 (F6).
+   shown. Buttons: Discard, Retake, Keep. Retake (F6) shows the stills so
+   the one with the passer-by can be picked; the session resumes without
+   resetting tracking, so the other shots' world frame is kept, the first
+   shot's exposure and white balance are re-applied, the target is guided
+   as before, the still replaces the old file and the sphere is stitched
+   again. It is a same-session, same-spot action by design: a retake from
+   another visit would face a different light and an unknown yaw, and is
+   not offered.
 6. M2 adds rings at further pitches plus zenith and nadir with the same
    mechanism. `CapturePlan.sphere` orders them as a serpentine, so the
    user turns around once rather than once per ring, and keeps the horizon
@@ -228,7 +235,8 @@ Documents/
       metadata.json       see below
       shots/              source stills and their poses, kept for re-stitch
         capture.json      manifest: front yaw, plan step, all poses
-        000.jpg           still in the sensor's landscape orientation
+        000.heic          still in the sensor's landscape orientation, 2400 px
+                          on the long side (000.jpg before September 2026)
         000.json          ARKit transform, intrinsics, timestamp, exposure
         ...
 ```
@@ -437,7 +445,7 @@ rest were proposed in v0.3 and v0.4 and confirmed in v0.5.
 | # | Question | Decision |
 |---|---|---|
 | 1 | Capture device | iPhone 13 mini on iOS 27 (A15; fully supports ARKit world tracking and high-resolution frame capture). An iPhone 17 Pro is available for comparison, mainly useful for stitch-time and camera-quality checks. Minimum deployment target was iOS 17 in v0.1 to v0.3; raised to iOS 27 in v0.4 (decision 14). |
-| 2 | Keep source shots after a successful stitch? | Keep, with a per-sphere "delete sources" action and a setting to auto-delete (M3). |
+| 2 | Keep source shots after a successful stitch? | Keep, with a per-sphere "delete sources" action and a setting to auto-delete (M3). Built in v0.6; auto-delete defaults to off. |
 | 3 | Save the stitched image to the iOS Photos app automatically? | No. Explicit export only. |
 | 4 | Apple Developer account | Free for M1, paid before M3. iCloud sync (F17) is the first feature that cannot work on a free account. |
 | 5 | Build and test loop | Code is written in this repository; the owner builds and runs on a Mac mini M4 with Xcode and the phone connected. The core package's tests run with `swift test` on the Mac. |
