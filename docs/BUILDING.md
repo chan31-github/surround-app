@@ -152,6 +152,24 @@ ground patterns near the nadir, where the camera moved half a metre between
 shots, may still show a jog. Pivot around the phone, not your body, to
 reduce it.
 
+## Exposure across a sphere
+
+Two things make shots of one sphere differ in brightness: the exposure the
+camera chose, and the lens darkening towards the frame's corners. The
+refiners solve both, in turn: a gain per shot, then one radial falloff
+shared by every shot (one lens, one falloff), then the gains again with the
+falloff removed. The falloff is reported as `vignetteK`, the log brightness
+per unit squared normalised radius; the rooftop spheres fit about -0.09,
+a 10 percent darkening at the corners, and the correction cuts the
+low-frequency brightness steps in flat sky by roughly a fifth.
+
+Two-band blending exists behind `StitchOptions.lowFrequencyBlendDegrees`
+and is off. Measured on the rooftop spheres it made those steps slightly
+worse at every width from 6 to 40 degrees: with the gains and the falloff
+corrected there is nothing left for the low band to fix, and the wide
+crossfade it blends towards averages misaligned content. Worth revisiting
+for a capture where the exposure lock failed.
+
 ## Storage
 
 Stills are stored as HEIC no larger than 2400 px on the long side, about
@@ -164,7 +182,23 @@ same per sphere; "Delete source shots when keeping" drops them at Keep.
 Source shots exist only to stitch a sphere again with a future engine, so
 removing them costs nothing today. The Mac harness reads either encoding.
 
+## Live preview, finish early, retake last
+
+During capture every still is pasted into the AR view at the pose it was
+taken from, slightly translucent, so the sphere grows behind the live
+camera as you turn and the next frame can be lined up against its
+neighbours. "Retake last" drops the most recent shot and re-arms its
+target. "Finish" appears once the horizon ring is closed and stitches what
+has been taken; the format records partial coverage.
+
 ## Retake
+
+Pick the shot on the sphere map rather than from a list, so it is clear
+where it points; the still is previewed before committing. The guidance
+circle is placed by projecting the target into the camera's frame, which
+stays correct when the phone is rolled and near the poles where a yaw
+difference means nothing. "Take it now" overrides the alignment gate: the
+pose is recorded as it is and the stitcher works from that.
 
 On the review screen, Retake shows the stills of the capture. Pick the one
 to redo; the capture screen returns with that target, the session having

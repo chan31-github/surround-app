@@ -13,10 +13,12 @@ struct CaptureOverlay: View {
         GeometryReader { geo in
             let centre = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
             ZStack {
-                if capture.phase == .capturing, let alignment = capture.alignment {
+                if capture.phase == .capturing, let alignment = capture.alignment,
+                   let pose = capture.currentPose, let target = currentTarget {
                     let pointsPerDegree = geo.size.width / CGFloat(max(20, capture.yawFieldOfViewDegrees))
-                    let dx = CGFloat(alignment.deltaYawDegrees) * pointsPerDegree
-                    let dy = -CGFloat(alignment.deltaPitchDegrees) * pointsPerDegree
+                    let offset = Self.screenAngles(pose: pose, target: target)
+                    let dx = CGFloat(offset.right) * pointsPerDegree
+                    let dy = CGFloat(-offset.up) * pointsPerDegree
                     let maxRadius = min(geo.size.width, geo.size.height) * 0.42
                     let distance = hypot(dx, dy)
                     let scale = distance > maxRadius ? maxRadius / distance : 1
@@ -51,7 +53,8 @@ struct CaptureOverlay: View {
                     .foregroundStyle(.black)
             }
             if let plan = capture.plan {
-                CoverageMap(plan: plan, done: capture.shots.count, current: capture.currentTargetIndex)
+                SphereDotMap(plan: plan, done: Set(capture.shots.map { $0.pose.index }),
+                             current: capture.currentTargetIndex)
                     .frame(width: 240, height: plan.targets.contains { $0.pitchDegrees != 0 } ? 72 : 28)
                 ProgressView(value: Double(capture.shots.count), total: Double(plan.targets.count))
                     .progressViewStyle(.linear)
@@ -90,7 +93,7 @@ struct CaptureOverlay: View {
                         .foregroundStyle(.white.opacity(0.8))
                 }
             }
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 Button(role: .cancel, action: onCancel) {
                     Text("Cancel")
                         .frame(maxWidth: .infinity)
@@ -102,6 +105,33 @@ struct CaptureOverlay: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                } else if capture.phase == .capturing, capture.retakingIndex != nil {
+                    Button {
+                        capture.captureNow()
+                    } label: {
+                        Label("Take it now", systemImage: "camera")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(capture.isCapturingFrame)
+                } else if capture.phase == .capturing {
+                    Button {
+                        capture.retakeLast()
+                    } label: {
+                        Label("Retake last", systemImage: "arrow.counterclockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(capture.shots.isEmpty || capture.isCapturingFrame)
+                    if capture.canFinishEarly {
+                        Button {
+                            capture.finishEarly()
+                        } label: {
+                            Label("Finish", systemImage: "checkmark")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                 }
             }
         }
@@ -123,6 +153,23 @@ struct CaptureOverlay: View {
         case .ring: return "\(shots) shots in one slow turn to the right, \(time)."
         case .sphere: return "\(shots) shots in one slow turn to the right, sweeping up and down as you go, \(time)."
         }
+    }
+
+    private var currentTarget: CaptureTarget? {
+        guard let plan = capture.plan, capture.currentTargetIndex < plan.targets.count else { return nil }
+        return plan.targets[capture.currentTargetIndex]
+    }
+
+    /// Where the target sits on screen, as angles right of and above the
+    /// centre of the view. Projecting the direction into the camera's own
+    /// frame keeps this right when the phone is rolled and near the poles,
+    /// where a yaw difference means nothing. Screen right is the camera's
+    /// +Y and screen up its -X, the portrait convention the roll readout
+    /// uses (see CameraPose.rollDegrees).
+    static func screenAngles(pose: CameraPose, target: CaptureTarget) -> (right: Float, up: Float) {
+        let c = pose.rotation.transposed * target.direction
+        let depth = max(0.0001, -c.z)
+        return (Angle.degrees(atan2(c.y, depth)), Angle.degrees(atan2(-c.x, depth)))
     }
 
     private func progressText(_ plan: CapturePlan) -> String {
@@ -173,62 +220,6 @@ struct CaptureOverlay: View {
         }
     }
 
-}
-
-/// The plan as a small map of the sphere: yaw across, from the front at the
-/// left edge once around, pitch down, so the capture reads as one sweep
-/// from left to right whatever order the targets come in. Done targets are
-/// green, the current one yellow, and a line marks the column being worked.
-private struct CoverageMap: View {
-    let plan: CapturePlan
-    let done: Int
-    let current: Int
-
-    private let inset: CGFloat = 8
-
-    private var startYaw: Float { plan.targets.first?.yawDegrees ?? 0 }
-    private var hasPitch: Bool { plan.targets.contains { $0.pitchDegrees != 0 } }
-
-    private func point(_ t: CaptureTarget, in size: CGSize) -> CGPoint {
-        let fx = CGFloat(Angle.wrapDegrees360(t.yawDegrees - startYaw) / 360)
-        let fy: CGFloat = hasPitch ? CGFloat((90 - t.pitchDegrees) / 180) : 0.5
-        return CGPoint(x: inset + fx * (size.width - 2 * inset),
-                       y: inset + fy * (size.height - 2 * inset))
-    }
-
-    private func colour(_ t: CaptureTarget) -> Color {
-        if t.id == current { return .yellow }
-        if t.id < done { return .green }
-        return .white.opacity(0.35)
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.black.opacity(0.35))
-                if hasPitch {
-                    // The horizon.
-                    Rectangle()
-                        .fill(.white.opacity(0.15))
-                        .frame(height: 1)
-                }
-                if current < plan.targets.count {
-                    Rectangle()
-                        .fill(.yellow.opacity(0.35))
-                        .frame(width: 2)
-                        .position(x: point(plan.targets[current], in: geo.size).x, y: geo.size.height / 2)
-                }
-                ForEach(plan.targets) { target in
-                    Circle()
-                        .fill(colour(target))
-                        .frame(width: target.id == current ? 9 : 6, height: target.id == current ? 9 : 6)
-                        .position(point(target, in: geo.size))
-                }
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: current)
-    }
 }
 
 private struct TargetMarker: View {

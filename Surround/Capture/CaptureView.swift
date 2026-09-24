@@ -32,7 +32,9 @@ struct CaptureView: View {
             Color.black.ignoresSafeArea()
             switch model.stage {
             case .preview, .capturing:
-                ARPreview(session: model.capture.session)
+                ARPreview(session: model.capture.session,
+                          shots: model.capture.shots,
+                          retakingIndex: model.capture.retakingIndex)
                     .ignoresSafeArea()
                 if isLandscape {
                     RotatePrompt(onCancel: { dismiss() })
@@ -55,7 +57,9 @@ struct CaptureView: View {
                 if let image = model.reviewImage {
                     ReviewView(image: image,
                                metadata: model.metadata,
+                               plan: model.capture.plan,
                                shots: model.shotFiles,
+                               canRetake: model.capture.canRetake,
                                onKeep: {
                                    model.keep(in: context)
                                    dismiss()
@@ -114,7 +118,9 @@ private struct StitchingView: View {
 private struct ReviewView: View {
     let image: UIImage
     let metadata: SphereMetadata?
+    let plan: CapturePlan?
     let shots: [(index: Int, url: URL, pitchDegrees: Float)]
+    let canRetake: Bool
     let onKeep: () -> Void
     let onRetake: (Int) -> Void
     let onDiscard: () -> Void
@@ -133,24 +139,29 @@ private struct ReviewView: View {
                         .font(.footnote)
                         .foregroundStyle(.yellow)
                 }
+                if canRetake, plan != nil {
+                    Button {
+                        showRetake = true
+                    } label: {
+                        Label("Retake a shot", systemImage: "arrow.counterclockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                }
                 HStack(spacing: 16) {
                     Button(role: .destructive, action: onDiscard) {
                         Label("Discard", systemImage: "trash")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
-                    Button {
-                        showRetake = true
-                    } label: {
-                        Label("Retake", systemImage: "arrow.counterclockwise")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                     Button(action: onKeep) {
                         Label("Keep", systemImage: "checkmark")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                 }
             }
             .padding()
@@ -158,53 +169,78 @@ private struct ReviewView: View {
             .padding()
         }
         .sheet(isPresented: $showRetake) {
-            RetakePicker(shots: shots) { index in
-                showRetake = false
-                onRetake(index)
+            if let plan {
+                RetakePicker(plan: plan, shots: shots) { index in
+                    showRetake = false
+                    onRetake(index)
+                }
+                .presentationDetents([.large])
             }
-            .presentationDetents([.large])
         }
     }
 }
 
-/// The stills of the capture, so the one with the passer-by in it can be
-/// picked out and retaken. Retaking works while you are still standing
-/// where you took the sphere; the exposure lock and the tracking frame are
-/// kept, so the new shot matches the others.
+/// Picking the shot to retake by where it points, not by a number in a
+/// list: the sphere map shows every shot in its place, tapping one previews
+/// that still, and the retake starts from there. Retaking works while the
+/// capture's tracking session is still alive, which is why it is offered
+/// only before the sphere is kept.
 private struct RetakePicker: View {
+    let plan: CapturePlan
     let shots: [(index: Int, url: URL, pitchDegrees: Float)]
     let onPick: (Int) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var selected: Int?
+
+    private var taken: Set<Int> { Set(shots.map { $0.index }) }
+    private var selectedShot: (index: Int, url: URL, pitchDegrees: Float)? {
+        shots.first { $0.index == selected }
+    }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 14) {
-                    ForEach(shots, id: \.index) { shot in
-                        Button {
-                            onPick(shot.index)
-                        } label: {
-                            VStack(spacing: 4) {
-                                ShotStill(url: shot.url)
-                                    .aspectRatio(3.0 / 4.0, contentMode: .fit)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                Text("\(shot.index + 1) · \(Self.pitchName(shot.pitchDegrees))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding()
-                Text("Stay where you took the sphere. The chosen shot is taken again with the same exposure and replaces the old one, then the sphere is stitched again.")
+            VStack(spacing: 16) {
+                Text("Tap the shot to take again. The map is the sphere: left to right is one turn from the front, top to bottom is sky to ground.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
-                    .padding(.bottom)
+
+                SphereDotMap(plan: plan, done: taken, current: nil, selected: selected) { index in
+                    if taken.contains(index) { selected = index }
+                }
+                .frame(height: plan.targets.contains { $0.pitchDegrees != 0 } ? 200 : 90)
+                .padding(.horizontal)
+
+                if let shot = selectedShot {
+                    ShotStill(url: shot.url)
+                        .frame(maxHeight: 260)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal)
+                    Text(Self.describe(plan: plan, index: shot.index))
+                        .font(.subheadline)
+                    Button {
+                        onPick(shot.index)
+                    } label: {
+                        Label("Retake this shot", systemImage: "arrow.counterclockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .padding(.horizontal)
+                } else {
+                    ContentUnavailableView("Pick a shot", systemImage: "hand.tap",
+                                           description: Text("Every dot is one of the \(shots.count) shots."))
+                }
+                Spacer(minLength: 0)
+                Text("Stay where you took the sphere. The shot is taken again with the same exposure and replaces the old one, then the sphere is stitched again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding([.horizontal, .bottom])
             }
-            .navigationTitle("Retake which shot?")
+            .padding(.top)
+            .navigationTitle("Retake a shot")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -214,14 +250,25 @@ private struct RetakePicker: View {
         }
     }
 
-    static func pitchName(_ pitch: Float) -> String {
-        switch pitch {
-        case 89...: return "zenith"
-        case ...(-89): return "nadir"
-        case 10...: return "up"
-        case ...(-10): return "down"
-        default: return "level"
+    /// "Shot 7 · 40° right of the front · level", so the picked dot can be
+    /// checked against what the phone is about to be pointed at.
+    static func describe(plan: CapturePlan, index: Int) -> String {
+        guard index < plan.targets.count, let front = plan.targets.first else { return "Shot \(index + 1)" }
+        let target = plan.targets[index]
+        let yaw = Angle.wrapDegrees180(target.yawDegrees - front.yawDegrees)
+        var parts = ["Shot \(index + 1)"]
+        switch target.pitchDegrees {
+        case 89...: parts.append("straight up")
+        case ...(-89): parts.append("straight down")
+        default:
+            parts.append(abs(yaw) < 1 ? "the front" : String(format: "%.0f° %@ of the front", abs(yaw), yaw > 0 ? "right" : "left"))
+            switch target.pitchDegrees {
+            case 10...: parts.append("tilted up")
+            case ...(-10): parts.append("tilted down")
+            default: parts.append("level")
+            }
         }
+        return parts.joined(separator: " · ")
     }
 }
 

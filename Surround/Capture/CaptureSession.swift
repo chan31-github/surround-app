@@ -94,6 +94,10 @@ final class CaptureSession: NSObject, ARSessionDelegate {
 
     /// Index of the shot being retaken from the review screen, while it is.
     private(set) var retakingIndex: Int?
+    /// False once the session has been interrupted since the capture ended,
+    /// so the world frame the shots were recorded in can no longer be
+    /// trusted and a retake would aim at the wrong place.
+    private(set) var worldFrameIsValid = true
 
     static var isSupported: Bool { ARWorldTrackingConfiguration.isSupported }
 
@@ -121,6 +125,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         currentTargetIndex = 0
         alignment = nil
         errorMessage = nil
+        worldFrameIsValid = true
         evaluator.thresholds = thresholds
         evaluator.reset()
         transition(to: .preview)
@@ -159,23 +164,62 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         if phase != .finished { transition(to: .idle) }
     }
 
-    /// Retakes one shot of a finished capture. The session resumes without
-    /// resetting tracking, so the world frame the other shots were recorded
-    /// in is kept (ARKit relocalises against what it mapped; capture waits
-    /// for tracking to be normal again), and the exposure and white balance
-    /// the first shot locked are re-applied. The new still replaces the old
-    /// file; the caller re-stitches when the phase returns to finished.
+    var canRetake: Bool { phase == .finished && worldFrameIsValid && !shots.isEmpty }
+
+    /// Retakes one shot of a finished capture. The session has been running
+    /// since the first shot, so the world frame the other shots were
+    /// recorded in is still current and the target points exactly where the
+    /// original was aimed. Re-running the configuration here would instead
+    /// give ARKit a fresh gravity-aligned origin at whatever heading the
+    /// phone happened to have, which is what put the guidance circle in the
+    /// wrong place. The new still replaces the old file; the caller
+    /// re-stitches when the phase returns to finished.
     func retake(index: Int) {
-        guard phase == .finished, let plan, index < plan.targets.count, index < shots.count,
-              let configuration else { return }
+        guard canRetake, let plan, index < plan.targets.count, index < shots.count else { return }
         retakingIndex = index
         currentTargetIndex = index
         errorMessage = nil
         evaluator.reset()
-        session.run(configuration, options: [])
+        // Re-assert the first shot's exposure in case anything disturbed it.
         applyLockedCamera()
         haptics.prepare()
         transition(to: .capturing)
+    }
+
+    /// Takes the shot where the camera is pointing now, without waiting for
+    /// the alignment gate. The pose is recorded as it is and the stitcher
+    /// works from that, so the target is guidance rather than a requirement.
+    func captureNow() {
+        guard phase == .capturing, !isCapturingFrame, let plan, currentTargetIndex < plan.targets.count,
+              let frame = session.currentFrame else { return }
+        capture(fallback: frame, target: plan.targets[currentTargetIndex])
+    }
+
+    /// Stops a capture with the shots taken so far; the stitcher handles any
+    /// subset (spec 6.2, partial coverage). Allowed once the horizon ring is
+    /// closed, so there is always a full band to look around.
+    var canFinishEarly: Bool {
+        guard phase == .capturing, retakingIndex == nil, !isCapturingFrame, let plan else { return false }
+        let horizon = plan.targets.filter { $0.pitchDegrees == 0 }.map { $0.id }
+        let taken = Set(shots.map { $0.pose.index })
+        return !horizon.isEmpty && horizon.allSatisfy { taken.contains($0) } && shots.count < plan.targets.count
+    }
+
+    func finishEarly() {
+        guard canFinishEarly else { return }
+        // The session keeps running so a retake stays in the same world
+        // frame; stop() releases the camera when the sphere is kept or discarded.
+        transition(to: .finished)
+    }
+
+    /// Drops the most recent shot and arms its target again, for when the
+    /// user saw something walk into the frame.
+    func retakeLast() {
+        guard phase == .capturing, retakingIndex == nil, !isCapturingFrame, let last = shots.last else { return }
+        shots.removeLast()
+        currentTargetIndex = last.pose.index
+        evaluator.reset()
+        haptics.prepare()
     }
 
     /// Abandons a retake and returns to the finished capture as it was.
@@ -183,7 +227,6 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         guard retakingIndex != nil else { return }
         retakingIndex = nil
         isCapturingFrame = false
-        session.pause()
         transition(to: .finished)
     }
 
@@ -243,6 +286,9 @@ final class CaptureSession: NSObject, ARSessionDelegate {
 
     func sessionWasInterrupted(_ session: ARSession) {
         trackingWarning = "Camera interrupted"
+        // The world frame cannot be trusted afterwards, so a retake would
+        // aim at the wrong place.
+        worldFrameIsValid = false
     }
 
     func sessionInterruptionEnded(_ session: ARSession) {
@@ -357,7 +403,6 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         if let retaking = retakingIndex {
             shots[retaking] = shot
             retakingIndex = nil
-            session.pause()
             transition(to: .finished)
             return
         }
@@ -367,7 +412,8 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         }
         currentTargetIndex += 1
         if let plan, currentTargetIndex >= plan.targets.count {
-            session.pause()
+            // Left running so a retake keeps this world frame; stop() releases
+            // the camera when the sphere is kept or discarded.
             transition(to: .finished)
         }
     }
