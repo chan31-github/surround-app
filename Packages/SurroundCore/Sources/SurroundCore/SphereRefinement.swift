@@ -7,6 +7,10 @@ public struct SphereRefinementReport: Equatable, Sendable {
     public var yawCorrectionsDegrees: [Float]
     public var pitchCorrectionsDegrees: [Float]
     public var gains: [Float]
+    /// Log brightness falloff per unit squared normalised radius, shared by
+    /// every shot; negative, and zero when it could not be told from the
+    /// per-shot gains. See `RingRefinement.fitVignette`.
+    public var vignetteK: Float
     /// Root mean square of what the accepted pairs' offsets still disagree
     /// with after the final solve, in degrees: how well a rotation-only
     /// model could fit them. Parallax is what is left.
@@ -17,6 +21,7 @@ public struct SphereRefinementReport: Equatable, Sendable {
 public struct RefinedSphere: Sendable {
     public var rotations: [Mat3]
     public var gains: [Float]
+    public var vignetteK: Float
     public var report: SphereRefinementReport
 }
 
@@ -84,9 +89,24 @@ public enum SphereRefinement {
         }
 
         var gains = [Float](repeating: 1, count: n)
+        var vignette: Float = 0
         if options.compensateExposure {
             let accepted = lastPairs.filter { $0.accepted }
-            var logGains = solve(count: n, pairs: accepted.map { ($0.from, $0.to, $0.logGainRatio, weight($0)) }, anchor: anchor, fixed: [])
+            var logGains = [Float](repeating: 0, count: n)
+            // The per-shot gains and the lens's radial falloff explain the
+            // same brightness differences, so they are solved in turn: gains
+            // first, then the falloff from what the gains leave behind, then
+            // the gains again with the falloff taken out. Two rounds is
+            // enough; the two are nearly independent because the falloff
+            // shows up as a difference across each overlap, not between shots.
+            for round in 0..<2 {
+                let deltas = accepted.map { p in
+                    (p.from, p.to, p.logGainRatio - vignette * p.vignette.meanX, weight(p))
+                }
+                logGains = solve(count: n, pairs: deltas, anchor: anchor, fixed: [])
+                guard options.compensateVignetting, round == 0 else { break }
+                vignette = RingRefinement.fitVignette(pairs: accepted) { logGains[$0.to] - logGains[$0.from] }
+            }
             let mean = logGains.reduce(0, +) / Float(max(1, n))
             logGains = logGains.map { $0 - mean }
             gains = logGains.map { max(1 / options.maxGain, min(options.maxGain, exp($0))) }
@@ -107,9 +127,10 @@ public enum SphereRefinement {
                                             yawCorrectionsDegrees: yawTotal,
                                             pitchCorrectionsDegrees: pitchTotal,
                                             gains: gains,
+                                            vignetteK: vignette,
                                             residualYawDegrees: count > 0 ? (sumYaw / Float(count)).squareRoot() : 0,
                                             residualPitchDegrees: count > 0 ? (sumPitch / Float(count)).squareRoot() : 0)
-        return RefinedSphere(rotations: rotations, gains: gains, report: report)
+        return RefinedSphere(rotations: rotations, gains: gains, vignetteK: vignette, report: report)
     }
 
     /// Overlaps below this many analysis pixels are not trusted at all;

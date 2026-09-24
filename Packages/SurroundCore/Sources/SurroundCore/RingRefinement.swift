@@ -6,6 +6,9 @@ public struct RingRefinementOptions: Equatable, Sendable {
     public var refineAlignment = true
     /// Equalise brightness between neighbours with a per-shot gain.
     public var compensateExposure = true
+    /// Fit and remove the lens's radial brightness falloff as well as a gain
+    /// per shot. One lens, so one falloff shared by every shot.
+    public var compensateVignetting = true
     /// Cut each overlap along the path where the two shots agree best instead
     /// of blending the whole overlap.
     public var computeSeams = true
@@ -50,6 +53,8 @@ public struct PairMeasurement: Equatable, Sendable {
     public var overlapPixels: Int = 0
     /// log(mean luma of `from` / mean luma of `to`) over the overlap.
     public var logGainRatio: Float = 0
+    /// Statistics for the shared radial falloff (see `VignetteSums`).
+    public var vignette = VignetteSums()
     public var accepted = false
 }
 
@@ -71,6 +76,8 @@ public struct RefinedRing: Sendable {
     /// Corrected world-from-camera rotation per shot, in input order.
     public var rotations: [Mat3]
     public var gains: [Float]
+    /// Shared radial brightness falloff; see `SphereRefinementReport`.
+    public var vignetteK: Float = 0
     public var report: RingRefinementReport
     /// One seam per pair in ring order; empty when seams were not computed.
     var seams: [RingSeam]
@@ -119,6 +126,23 @@ struct LumaPatch {
     let degreesPerPixel: Float
     var luma: [Float]
     var valid: [UInt8]
+    /// Squared distance of the sampled pixel from the frame's centre,
+    /// normalised so a corner is 1, for fitting the lens's radial falloff.
+    var radiusSquared: [Float]
+}
+
+/// Sums over one pair's aligned overlap for fitting that falloff: `x` is the
+/// difference of the two shots' squared radii at a cell and `y` the log of
+/// their luma ratio, so the slope of y against x is the falloff.
+public struct VignetteSums: Equatable, Sendable {
+    public var count: Int = 0
+    public var sumX: Float = 0
+    public var sumXX: Float = 0
+    public var sumY: Float = 0
+    public var sumXY: Float = 0
+
+    /// Mean squared-radius difference, for correcting a pair's gain ratio.
+    var meanX: Float { count > 0 ? sumX / Float(count) : 0 }
 }
 
 struct PatchWindow {
@@ -218,10 +242,20 @@ public enum RingRefinement {
         }
 
         var gains = [Float](repeating: 1, count: n)
+        var vignette: Float = 0
         if options.compensateExposure, pairCount > 0 {
-            let logGains = chain(deltas: lastPairs.map { $0.logGainRatio }, accepted: lastPairs.map { $0.accepted }, anchorFirst: false)
+            // Gains and the lens's radial falloff in turn; see SphereRefinement.
+            var corrections = [Float](repeating: 0, count: n)
+            for round in 0..<2 {
+                let deltas = lastPairs.map { $0.logGainRatio - vignette * $0.vignette.meanX }
+                corrections = chain(deltas: deltas, accepted: lastPairs.map { $0.accepted }, anchorFirst: false).corrections
+                guard options.compensateVignetting, round == 0 else { break }
+                var byIndex = [Float](repeating: 0, count: n)
+                for (position, index) in order.enumerated() { byIndex[index] = corrections[position] }
+                vignette = fitVignette(pairs: lastPairs) { byIndex[$0.to] - byIndex[$0.from] }
+            }
             for (position, index) in order.enumerated() {
-                gains[index] = max(1 / options.maxGain, min(options.maxGain, exp(logGains.corrections[position])))
+                gains[index] = max(1 / options.maxGain, min(options.maxGain, exp(corrections[position])))
             }
         }
 
@@ -256,7 +290,7 @@ public enum RingRefinement {
                                           gains: gains,
                                           closureYawDegrees: closureYaw,
                                           closurePitchDegrees: closurePitch)
-        return RefinedRing(rotations: rotations, gains: gains, report: report, seams: seams)
+        return RefinedRing(rotations: rotations, gains: gains, vignetteK: vignette, report: report, seams: seams)
     }
 
     // MARK: Geometry helpers
@@ -334,6 +368,8 @@ public enum RingRefinement {
         let height = max(1, Int(((window.pitchMax - window.pitchMin) / dpp).rounded(.up)))
         var luma = [Float](repeating: 0, count: width * height)
         var valid = [UInt8](repeating: 0, count: width * height)
+        var radiusSquared = [Float](repeating: 0, count: width * height)
+        let invHalfDiagonalSquared = 1 / max(1, pow(Float(projector.width) / 2, 2) + pow(Float(projector.height) / 2, 2))
         shot.image.pixels.withUnsafeBufferPointer { buf in
             guard let px = buf.baseAddress else { return }
             for y in 0..<height {
@@ -347,11 +383,14 @@ public enum RingRefinement {
                     let s = PixelSampling.bilinearRGB(px, width: projector.width, height: projector.height, u: uv.u, v: uv.v)
                     luma[y * width + x] = PixelSampling.luma(s)
                     valid[y * width + x] = 1
+                    let du = uv.u - projector.cx
+                    let dv = uv.v - projector.cy
+                    radiusSquared[y * width + x] = (du * du + dv * dv) * invHalfDiagonalSquared
                 }
             }
         }
         return LumaPatch(width: width, height: height, yawMin: window.yawMin, pitchMax: window.pitchMax,
-                         degreesPerPixel: dpp, luma: luma, valid: valid)
+                         degreesPerPixel: dpp, luma: luma, valid: valid, radiusSquared: radiusSquared)
     }
 
     /// Luma minus its local mean over `radius`, with a validity mask eroded by
@@ -549,6 +588,49 @@ public enum RingRefinement {
         if count > 0, sumA > 0, sumB > 0 {
             pair.logGainRatio = log(sumA / sumB)
         }
+
+        // Radial falloff statistics over the same overlap.
+        var v = VignetteSums()
+        if y0 < y1, x0 < x1 {
+            for y in y0..<y1 {
+                let ra = y * a.width
+                let rb = (y - s.sy) * a.width - s.sx
+                for x in x0..<x1 where a.valid[ra + x] != 0 && b.valid[rb + x] != 0 {
+                    let la = a.luma[ra + x]
+                    let lb = b.luma[rb + x]
+                    guard la > 0.02, lb > 0.02 else { continue }
+                    let xd = a.radiusSquared[ra + x] - b.radiusSquared[rb + x]
+                    let yd = log(la) - log(lb)
+                    v.count += 1
+                    v.sumX += xd
+                    v.sumXX += xd * xd
+                    v.sumY += yd
+                    v.sumXY += xd * yd
+                }
+            }
+        }
+        pair.vignette = v
+    }
+
+    /// One radial falloff shared by every shot, since they came from one
+    /// lens: the log brightness at squared normalised radius r2 is `k * r2`,
+    /// k negative because a lens darkens towards the frame's edge. Fitted by
+    /// least squares from the pairs, holding the per-shot gains fixed; the
+    /// caller then re-solves the gains with the falloff removed. Returns 0
+    /// when the overlaps do not span enough of a radius range to tell the
+    /// two apart.
+    static func fitVignette(pairs: [PairMeasurement], logGainDelta: (PairMeasurement) -> Float, limit: Float = 0.5) -> Float {
+        var numerator: Float = 0
+        var denominator: Float = 0
+        var spread: Float = 0
+        for p in pairs where p.accepted && p.vignette.count > 64 {
+            let d = logGainDelta(p)
+            numerator += p.vignette.sumXY - d * p.vignette.sumX
+            denominator += p.vignette.sumXX
+            spread += p.vignette.sumXX - p.vignette.sumX * p.vignette.meanX
+        }
+        guard denominator > 1e-6, spread > 1 else { return 0 }
+        return max(-limit, min(limit, numerator / denominator))
     }
 
     // MARK: Seams

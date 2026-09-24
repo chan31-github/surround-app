@@ -148,7 +148,8 @@ final class RingRefinementTests: XCTestCase {
     func testSeamFollowsCheapestColumn() {
         let w = 5, h = 6
         var a = LumaPatch(width: w, height: h, yawMin: 0, pitchMax: 0, degreesPerPixel: 1,
-                          luma: [Float](repeating: 0.2, count: w * h), valid: [UInt8](repeating: 1, count: w * h))
+                          luma: [Float](repeating: 0.2, count: w * h), valid: [UInt8](repeating: 1, count: w * h),
+                          radiusSquared: [Float](repeating: 0, count: w * h))
         var b = a
         // The shots disagree everywhere except column 3.
         for y in 0..<h {
