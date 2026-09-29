@@ -32,15 +32,15 @@ public struct StitchOptions: Equatable, Sendable {
     public var seamFeatherDegrees: Float = 1.0
     /// Crossfade width at the boundaries between shots of a multi-ring capture.
     public var sphereFeatherDegrees: Float = 2.0
-    /// Two-band blending: the seams keep their sharp cuts, but brightness is
-    /// crossfaded over this many degrees, so a step at a seam fades out
-    /// instead of showing as a line. Off by default: measured against the
-    /// rooftop spheres it made the low-frequency steps in flat sky slightly
-    /// worse at every width from 6 to 40 degrees, because the per-shot gains
-    /// and the radial falloff already remove the brightness differences and
-    /// the wide crossfade it blends towards averages misaligned content.
-    /// Kept for captures where exposure could not be locked.
-    public var lowFrequencyBlendDegrees: Float = 0
+    /// Two-band blending for multi-ring captures. Each shot is split into a
+    /// coarse layer (brightness varying over more than this many degrees)
+    /// and a fine layer (everything else). Fine layers are joined with the
+    /// seam weights, coarse layers are crossfaded widely, so a brightness
+    /// difference between two shots fades out instead of stepping at the cut,
+    /// while detail stays exactly where the cut put it. Zero turns it off.
+    public var bandSplitDegrees: Float = 3
+    /// How far the coarse layers are crossfaded, as a fraction of the frame.
+    public var coarseFeatherFraction: Float = 0.3
     /// Move each boundary of a multi-ring capture to where the two shots
     /// disagree least (a minimum cut); off, the boundary sits midway between
     /// the shots' optical axes.
@@ -93,6 +93,10 @@ public enum ProjectionStitcher {
         /// radius, with the scale that normalises a pixel's radius.
         let vignetteK: Float
         let invHalfDiagonalSquared: Float
+        /// Coarse layer size and the factor it was shrunk by, when bands are on.
+        var coarseWidth = 0, coarseHeight = 0
+        var coarseFactor: Float = 1
+        var wideFeatherU: Float = 1, wideFeatherV: Float = 1
 
         init(shot: StitchShot, rotation: Mat3, gain: Float, featherFraction: Float, vignetteK: Float = 0) {
             projector = ShotProjector(shot: shot, rotation: rotation)
@@ -153,6 +157,7 @@ public enum ProjectionStitcher {
                                   ownership: Ownership,
                                   seamFeatherDegrees: Float,
                                   sources: [UnsafePointer<UInt8>],
+                                  coarseSources: [UnsafePointer<UInt8>] = [],
                                   progress: (@Sendable (Float) -> Void)?) -> Composite {
         var tables: SeamTables?
         var nearestFeather: Float?
@@ -194,6 +199,7 @@ public enum ProjectionStitcher {
                                                 out: outBase, coverage: covBase,
                                                 nearestFeatherRadians: nearestFeather.map { Angle.radians($0) },
                                                 map: map,
+                                                coarse: coarseSources.count == prepared.count ? coarseSources : nil,
                                                 seams: tables == nil ? nil : BandWork.Seams(
                                                     relYaw: relYawPtr.baseAddress!, left: leftPtr.baseAddress!,
                                                     right: rightPtr.baseAddress!, leftFeather: leftFPtr.baseAddress!,
@@ -243,6 +249,8 @@ public enum ProjectionStitcher {
         let coverage: UnsafeMutablePointer<Int32>
         let nearestFeatherRadians: Float?
         let map: OwnershipMap?
+        /// Coarse layers, one per shot, when two-band blending is on.
+        let coarse: [UnsafePointer<UInt8>]?
         let seams: Seams?
 
         private struct Candidate {
@@ -281,6 +289,8 @@ public enum ProjectionStitcher {
                 for x in 0..<outW {
                     let d = Vec3(sinYaw[x] * cp, sp, -cosYaw[x] * cp)
                     var r: Float = 0, g: Float = 0, b: Float = 0, wsum: Float = 0
+                    // Coarse band, crossfaded widely.
+                    var cr: Float = 0, cg: Float = 0, cb: Float = 0, csum: Float = 0
                     var found = 0
                     for i in 0..<prepared.count {
                         let p = prepared[i]
@@ -310,6 +320,24 @@ public enum ProjectionStitcher {
                         }
                         let s = PixelSampling.bilinearRGB(sources[i], width: p.projector.width, height: p.projector.height, u: u, v: v)
                         let gain = p.sampleGain(u: u, v: v)
+                        if let coarse {
+                            // Fine band = shot minus its coarse layer, joined at the
+                            // seams; coarse band blended over a wide border feather.
+                            let cu = min(Float(p.coarseWidth) - 1.001, max(0, (u + 0.5) / p.coarseFactor - 0.5))
+                            let cv = min(Float(p.coarseHeight) - 1.001, max(0, (v + 0.5) / p.coarseFactor - 0.5))
+                            let c = PixelSampling.bilinearRGB(coarse[i], width: p.coarseWidth, height: p.coarseHeight, u: cu, v: cv)
+                            r += (s.r - c.r) * gain * w
+                            g += (s.g - c.g) * gain * w
+                            b += (s.b - c.b) * gain * w
+                            wsum += w
+                            let wide = max(0.001, min(1, min(min(u, p.projector.maxU - u) / p.wideFeatherU,
+                                                             min(v, p.projector.maxV - v) / p.wideFeatherV)))
+                            cr += c.r * gain * wide
+                            cg += c.g * gain * wide
+                            cb += c.b * gain * wide
+                            csum += wide
+                            continue
+                        }
                         r += s.r * gain * w
                         g += s.g * gain * w
                         b += s.b * gain * w
@@ -346,6 +374,11 @@ public enum ProjectionStitcher {
                     }
                     if wsum > 0 {
                         let inv = 1 / wsum
+                        if csum > 0 {
+                            r += cr / csum * wsum
+                            g += cg / csum * wsum
+                            b += cb / csum * wsum
+                        }
                         out[o] = UInt8(max(0, min(255, (r * inv).rounded())))
                         out[o + 1] = UInt8(max(0, min(255, (g * inv).rounded())))
                         out[o + 2] = UInt8(max(0, min(255, (b * inv).rounded())))
@@ -420,36 +453,28 @@ public enum ProjectionStitcher {
             Prepared(shot: shots[$0], rotation: rotations[$0], gain: gains[$0], featherFraction: feather, vignetteK: vignetteK)
         }
         let images = shots.map { $0.image }
-        let usesBands = options.lowFrequencyBlendDegrees > 0 && { if case .map = ownership { return true } else { return false } }()
-        var composite = withPixelPointers(images) { sources in
-            self.composite(layout: layout, prepared: prepared, ownership: ownership, seamFeatherDegrees: options.seamFeatherDegrees,
-                           sources: sources) { progress?(0.1 + (usesBands ? 0.8 : 0.9) * $0) }
+        var coarse: [RGBAImage] = []
+        var preparedForBands = prepared
+        if options.bandSplitDegrees > 0, case .map = ownership {
+            for i in 0..<n {
+                let shot = shots[i]
+                let degreesPerPixel = shot.intrinsics.fovAcrossWidthDegrees / Float(shot.image.width)
+                let factor = max(2, Int((options.bandSplitDegrees / degreesPerPixel / 2).rounded()))
+                let layer = coarseLayer(of: shot.image, factor: factor)
+                coarse.append(layer)
+                preparedForBands[i].coarseWidth = layer.width
+                preparedForBands[i].coarseHeight = layer.height
+                preparedForBands[i].coarseFactor = Float(factor)
+                preparedForBands[i].wideFeatherU = max(1, Float(shot.image.width) * options.coarseFeatherFraction)
+                preparedForBands[i].wideFeatherV = max(1, Float(shot.image.height) * options.coarseFeatherFraction)
+            }
         }
-
-        if usesBands {
-            // Two-band blending. The composite above holds the detail, cut at
-            // the seams; a wide crossfade of the same shots holds brightness
-            // that varies smoothly across them. Adding back the low
-            // frequencies of the difference leaves detail exactly where the
-            // cut put it while a step at a seam fades out over the blend
-            // width. Both are computed small, which is all the low band
-            // needs, so this costs a fraction of the main pass.
-            let low = EquirectangularLayout(width: max(256, min(outW, 1024)))
-            let wide = (0..<n).map {
-                Prepared(shot: shots[$0], rotation: rotations[$0], gain: gains[$0], featherFraction: 0.45, vignetteK: vignetteK)
+        let composite = withPixelPointers(images) { sources in
+            withPixelPointers(coarse) { coarseSources in
+                self.composite(layout: layout, prepared: preparedForBands, ownership: ownership,
+                               seamFeatherDegrees: options.seamFeatherDegrees,
+                               sources: sources, coarseSources: coarseSources) { progress?(0.1 + 0.9 * $0) }
             }
-            let (sharpLow, smoothLow) = withPixelPointers(images) { sources -> (Composite, Composite) in
-                (self.composite(layout: low, prepared: prepared, ownership: ownership,
-                                seamFeatherDegrees: options.seamFeatherDegrees, sources: sources, progress: nil),
-                 self.composite(layout: low, prepared: wide, ownership: .blend,
-                                seamFeatherDegrees: options.seamFeatherDegrees, sources: sources, progress: nil))
-            }
-            let radius = max(1, Int((options.lowFrequencyBlendDegrees / (360 / Float(low.width))).rounded()))
-            let correction = lowFrequencyDifference(sharp: sharpLow.pixels, smooth: smoothLow.pixels,
-                                                    width: low.width, height: low.height, radius: radius)
-            applyLowFrequency(correction, lowWidth: low.width, lowHeight: low.height,
-                              to: &composite.pixels, width: outW, height: layout.height)
-            progress?(1)
         }
 
         let rowCoverage = composite.coverage.map { Float($0) / Float(outW) }
@@ -466,109 +491,54 @@ public enum ProjectionStitcher {
                             sphereRefinement: sphereReport)
     }
 
-    /// Blurred (smooth minus sharp) per low-resolution pixel, as RGB floats.
-    /// The blur wraps in yaw and is weighted by coverage, so the edge of the
-    /// covered band does not drag the correction towards black.
-    static func lowFrequencyDifference(sharp: [UInt8], smooth: [UInt8], width: Int, height: Int, radius: Int) -> [Float] {
-        let count = width * height
-        var diff = [SIMD3<Float>](repeating: .zero, count: count)
-        var valid = [Float](repeating: 0, count: count)
-        for i in 0..<count where sharp[i * 4 + 3] != 0 && smooth[i * 4 + 3] != 0 {
-            diff[i] = SIMD3(Float(smooth[i * 4]) - Float(sharp[i * 4]),
-                            Float(smooth[i * 4 + 1]) - Float(sharp[i * 4 + 1]),
-                            Float(smooth[i * 4 + 2]) - Float(sharp[i * 4 + 2]))
-            valid[i] = 1
+    /// A shot's coarse layer: shrunk by `factor` with area averaging, then
+    /// softened by two 3x3 box passes so that bilinear sampling of it has no
+    /// visible grid. Sampled at `(u + 0.5) / factor - 0.5`.
+    static func coarseLayer(of image: RGBAImage, factor: Int) -> RGBAImage {
+        let w = max(1, (image.width + factor - 1) / factor)
+        let h = max(1, (image.height + factor - 1) / factor)
+        var acc = [SIMD3<Float>](repeating: .zero, count: w * h)
+        var cnt = [Float](repeating: 0, count: w * h)
+        image.pixels.withUnsafeBufferPointer { px in
+            for y in 0..<image.height {
+                let row = (y / factor) * w
+                for x in 0..<image.width {
+                    let i = (y * image.width + x) * 4
+                    acc[row + x / factor] += SIMD3(Float(px[i]), Float(px[i + 1]), Float(px[i + 2]))
+                    cnt[row + x / factor] += 1
+                }
+            }
         }
-        // Two box passes approximate a Gaussian closely enough here.
+        for i in 0..<(w * h) where cnt[i] > 0 { acc[i] /= cnt[i] }
         for _ in 0..<2 {
-            var hDiff = [SIMD3<Float>](repeating: .zero, count: count)
-            var hValid = [Float](repeating: 0, count: count)
-            for y in 0..<height {
-                for x in 0..<width {
+            var next = acc
+            for y in 0..<h {
+                for x in 0..<w {
                     var sum = SIMD3<Float>.zero
-                    var w: Float = 0
-                    for k in -radius...radius {
-                        let i = y * width + ((x + k) % width + width) % width
-                        sum += diff[i]
-                        w += valid[i]
-                    }
-                    hDiff[y * width + x] = sum
-                    hValid[y * width + x] = w
-                }
-            }
-            var vDiff = [SIMD3<Float>](repeating: .zero, count: count)
-            var vValid = [Float](repeating: 0, count: count)
-            for y in 0..<height {
-                let y0 = max(0, y - radius)
-                let y1 = min(height - 1, y + radius)
-                for x in 0..<width {
-                    var sum = SIMD3<Float>.zero
-                    var w: Float = 0
-                    for yy in y0...y1 {
-                        sum += hDiff[yy * width + x]
-                        w += hValid[yy * width + x]
-                    }
-                    if w > 0 {
-                        vDiff[y * width + x] = sum / w
-                        vValid[y * width + x] = 1
-                    }
-                }
-            }
-            diff = vDiff
-            valid = vValid
-        }
-        var out = [Float](repeating: 0, count: count * 3)
-        for i in 0..<count {
-            out[i * 3] = diff[i].x
-            out[i * 3 + 1] = diff[i].y
-            out[i * 3 + 2] = diff[i].z
-        }
-        return out
-    }
-
-    private struct UpsampleWork: @unchecked Sendable {
-        let pixels: UnsafeMutablePointer<UInt8>
-        let correction: UnsafePointer<Float>
-    }
-
-    /// Adds the bilinearly upsampled low-resolution correction to the
-    /// full-resolution pixels, wrapping in yaw.
-    static func applyLowFrequency(_ correction: [Float], lowWidth: Int, lowHeight: Int,
-                                  to pixels: inout [UInt8], width: Int, height: Int) {
-        let sx = Float(lowWidth) / Float(width)
-        let sy = Float(lowHeight) / Float(height)
-        pixels.withUnsafeMutableBufferPointer { px in
-            correction.withUnsafeBufferPointer { c in
-                // Each row writes only its own pixels and reads a shared
-                // correction, which the compiler cannot see through pointers.
-                let work = UpsampleWork(pixels: px.baseAddress!, correction: c.baseAddress!)
-                DispatchQueue.concurrentPerform(iterations: height) { y in
-                    let px = work.pixels
-                    let c = work.correction
-                    let fy = max(0, min(Float(lowHeight - 1), (Float(y) + 0.5) * sy - 0.5))
-                    let y0 = Int(fy)
-                    let y1 = min(y0 + 1, lowHeight - 1)
-                    let ty = fy - Float(y0)
-                    for x in 0..<width {
-                        let o = (y * width + x) * 4
-                        if px[o + 3] == 0 { continue }
-                        let fx = (Float(x) + 0.5) * sx - 0.5
-                        let x0i = Int(fx.rounded(.down))
-                        let tx = fx - Float(x0i)
-                        let x0 = ((x0i % lowWidth) + lowWidth) % lowWidth
-                        let x1 = (x0 + 1) % lowWidth
-                        let i00 = (y0 * lowWidth + x0) * 3, i10 = (y0 * lowWidth + x1) * 3
-                        let i01 = (y1 * lowWidth + x0) * 3, i11 = (y1 * lowWidth + x1) * 3
-                        let w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty)
-                        let w01 = (1 - tx) * ty, w11 = tx * ty
-                        for ch in 0..<3 {
-                            let d = c[i00 + ch] * w00 + c[i10 + ch] * w10 + c[i01 + ch] * w01 + c[i11 + ch] * w11
-                            px[o + ch] = UInt8(max(0, min(255, (Float(px[o + ch]) + d).rounded())))
+                    var n: Float = 0
+                    for dy in -1...1 {
+                        let yy = y + dy
+                        guard yy >= 0, yy < h else { continue }
+                        for dx in -1...1 {
+                            let xx = x + dx
+                            guard xx >= 0, xx < w else { continue }
+                            sum += acc[yy * w + xx]
+                            n += 1
                         }
                     }
+                    next[y * w + x] = sum / n
                 }
             }
+            acc = next
         }
+        var out = RGBAImage(width: w, height: h)
+        for i in 0..<(w * h) {
+            out.pixels[i * 4] = UInt8(max(0, min(255, acc[i].x.rounded())))
+            out.pixels[i * 4 + 1] = UInt8(max(0, min(255, acc[i].y.rounded())))
+            out.pixels[i * 4 + 2] = UInt8(max(0, min(255, acc[i].z.rounded())))
+            out.pixels[i * 4 + 3] = 255
+        }
+        return out
     }
 
     private static func seamTables(refined: RefinedRing, layout: EquirectangularLayout) -> SeamTables {
