@@ -60,6 +60,7 @@ struct CaptureView: View {
                                plan: model.capture.plan,
                                shots: model.shotFiles,
                                canRetake: model.capture.canRetake,
+                               driftMetres: model.capture.maxDriftMetres,
                                onKeep: {
                                    model.keep(in: context)
                                    dismiss()
@@ -121,6 +122,7 @@ private struct ReviewView: View {
     let plan: CapturePlan?
     let shots: [(index: Int, url: URL, pitchDegrees: Float)]
     let canRetake: Bool
+    let driftMetres: Float?
     let onKeep: () -> Void
     let onRetake: (Int) -> Void
     let onDiscard: () -> Void
@@ -138,6 +140,12 @@ private struct ReviewView: View {
                     Text("The ring did not fully close; expect a gap.")
                         .font(.footnote)
                         .foregroundStyle(.yellow)
+                }
+                if let drift = driftMetres, drift > PivotGuide.warningDistance {
+                    Text("The phone moved up to \(Int((drift * 100).rounded())) cm during capture, so things within a few metres of you may not line up. Next time keep it over one spot and step around it.")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
                 }
                 if canRetake, plan != nil {
                     Button {

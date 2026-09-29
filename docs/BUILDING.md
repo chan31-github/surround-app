@@ -163,12 +163,15 @@ per unit squared normalised radius; the rooftop spheres fit about -0.09,
 a 10 percent darkening at the corners, and the correction cuts the
 low-frequency brightness steps in flat sky by roughly a fifth.
 
-Two-band blending exists behind `StitchOptions.lowFrequencyBlendDegrees`
-and is off. Measured on the rooftop spheres it made those steps slightly
-worse at every width from 6 to 40 degrees: with the gains and the falloff
-corrected there is nothing left for the low band to fix, and the wide
-crossfade it blends towards averages misaligned content. Worth revisiting
-for a capture where the exposure lock failed.
+Two-band blending is on for full spheres. Each shot is split into a coarse
+layer (its local average over about 3 degrees) and a fine layer (the rest).
+Fine layers are joined with the seam weights, so detail stays exactly where
+the minimum cut put it; coarse layers are crossfaded over 30 percent of the
+frame, so a brightness difference the gains could not remove, typically a
+gradient across the sky near the sun, fades out instead of showing as a
+block. `StitchOptions.bandSplitDegrees = 0` turns it off. A first version
+that blended the finished composite towards a wide crossfade could not work,
+because the finished composite already contained the step.
 
 ## Storage
 
@@ -181,6 +184,35 @@ source shots, with "Remove all source shots"; the details sheet has the
 same per sphere; "Delete source shots when keeping" drops them at Keep.
 Source shots exist only to stitch a sphere again with a future engine, so
 removing them costs nothing today. The Mac harness reads either encoding.
+
+## Pivot gauge
+
+Every capture so far drifted 20 to 40 cm from where it started, with the
+largest distance when facing backwards: the lens circles the body when the
+user turns on the spot with the phone held in front. Parallax from that is
+what splits posts and railings at the seams. During capture a small top-down
+gauge beside the sphere map shows where the phone is relative to the start,
+with the user facing up the gauge: green within 10 cm, yellow to 25, red
+beyond, with a banner past 25 cm asking the user to keep the phone over one
+spot and step around it. The review screen notes the largest drift when it
+was over 25 cm. The logic is `PivotGuide` in the core package.
+
+Position readings are ignored while the phone points more than 55 degrees
+up or down, or when they put the phone more than 90 cm from the start: with
+only sky or ground in view ARKit's position estimate can wander (the hilltop
+sphere of 26 September read 0.97 m at the zenith and 1.8 m on the next shot,
+then recovered), while rotation, which the stitcher uses, is unaffected.
+The gauge then shows the last good reading faded, labelled "holding".
+
+## Signing expiry
+
+A free Personal Team's signing lasts seven days; after that iOS keeps the
+app and its spheres but will not open it until it is rebuilt and installed
+again from Xcode, and the developer is trusted again in Settings, General,
+VPN & Device Management. The filter menu shows "Signed until ...", read
+from the bundle's embedded profile, and a yellow banner appears across the
+library from 48 hours before. Rebuilding keeps the data; deleting the app
+does not. The paid Apple Developer Program signs for a year.
 
 ## Live preview, finish early, retake last
 

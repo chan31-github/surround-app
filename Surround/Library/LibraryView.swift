@@ -183,6 +183,18 @@ struct LibraryView: View {
         }
         // On the stack itself so pushed screens and their sheets see it too.
         .environment(navigation)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let days = BuildInfo.signingWarningDays, let expires = BuildInfo.signingExpiresAt {
+                Text(days == 0 ? "This build stops opening today, at \(expires.formatted(date: .omitted, time: .shortened)). Rebuild it from Xcode; your spheres are kept."
+                               : "This build stops opening on \(expires.formatted(.dateTime.weekday(.wide).hour().minute())). Rebuild it from Xcode before then; your spheres are kept.")
+                    .font(.footnote.weight(.medium))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(8)
+                    .background(.yellow)
+                    .foregroundStyle(.black)
+            }
+        }
     }
 
     // MARK: Trips and filter
@@ -296,6 +308,9 @@ struct LibraryView: View {
             Divider()
             Text(syncStatus)
             Text(BuildInfo.summary)
+            if let signing = BuildInfo.signingSummary {
+                Text(signing)
+            }
         } label: {
             Label("Filter", systemImage: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }

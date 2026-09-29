@@ -52,10 +52,25 @@ struct CaptureOverlay: View {
                     .background(.yellow, in: Capsule())
                     .foregroundStyle(.black)
             }
+            if capture.phase == .capturing, !capture.pivotIsHeld, let pivot = capture.pivot, pivot.distance > PivotGuide.warningDistance {
+                Text("The phone has moved \(Int((pivot.distance * 100).rounded())) cm. Keep it over one spot and step around it.")
+                    .font(.subheadline.weight(.semibold))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(.white)
+            }
             if let plan = capture.plan {
+                HStack(alignment: .center, spacing: 10) {
                 SphereDotMap(plan: plan, done: Set(capture.shots.map { $0.pose.index }),
                              current: capture.currentTargetIndex)
                     .frame(width: 240, height: plan.targets.contains { $0.pitchDegrees != 0 } ? 72 : 28)
+                    if capture.phase == .capturing {
+                        PivotGauge(offset: capture.pivot, isHeld: capture.pivotIsHeld)
+                            .frame(width: 60, height: 72)
+                    }
+                }
                 ProgressView(value: Double(capture.shots.count), total: Double(plan.targets.count))
                     .progressViewStyle(.linear)
                     .tint(.green)
@@ -205,7 +220,7 @@ struct CaptureOverlay: View {
             case .ring:
                 return "Hold the phone upright. Centre the view you want in front, then tap Start."
             case .sphere:
-                return "Centre the view you want in front, then tap Start. Pivot around the phone, not your body."
+                return "Centre the view you want in front, then tap Start. Keep the phone over one spot and step your feet around it, rather than turning on the spot."
             }
         case .capturing:
             if capture.isCapturingFrame { return "Hold still" }
@@ -220,6 +235,63 @@ struct CaptureOverlay: View {
         }
     }
 
+}
+
+/// Where the phone is relative to where the capture started, seen from
+/// above with the user facing up the gauge. The green disc has a 10 cm
+/// radius and the ring 25 cm; the dot should stay in the green. Turning on
+/// the spot swings it round the ring; stepping around the phone keeps it
+/// in the middle.
+private struct PivotGauge: View {
+    let offset: PivotOffset?
+    /// Pointing at sky or ground, where position cannot be tracked: the last
+    /// good reading is shown faded until the phone comes back to the horizon.
+    var isHeld = false
+    /// Metres from the centre to the gauge's edge.
+    private let range: Float = 0.4
+
+    private var colour: Color {
+        guard let d = offset?.distance else { return .white }
+        if d <= PivotGuide.comfortableDistance { return .green }
+        if d <= PivotGuide.warningDistance { return .yellow }
+        return .red
+    }
+
+    var body: some View {
+        VStack(spacing: 3) {
+            GeometryReader { geo in
+                let radius = min(geo.size.width, geo.size.height) / 2
+                let scale = radius / CGFloat(range)
+                let centre = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
+                ZStack {
+                    Circle().fill(.black.opacity(0.35))
+                    Circle()
+                        .fill(.green.opacity(0.3))
+                        .frame(width: CGFloat(PivotGuide.comfortableDistance) * scale * 2,
+                               height: CGFloat(PivotGuide.comfortableDistance) * scale * 2)
+                    Circle()
+                        .strokeBorder(.white.opacity(0.4), lineWidth: 1)
+                        .frame(width: CGFloat(PivotGuide.warningDistance) * scale * 2,
+                               height: CGFloat(PivotGuide.warningDistance) * scale * 2)
+                    if let o = offset {
+                        let dx = CGFloat(max(-range, min(range, o.right))) * scale
+                        let dy = -CGFloat(max(-range, min(range, o.forward))) * scale
+                        Circle()
+                            .fill(colour.opacity(isHeld ? 0.35 : 1))
+                            .frame(width: 9, height: 9)
+                            .position(x: centre.x + dx, y: centre.y + dy)
+                    }
+                }
+            }
+            .aspectRatio(1, contentMode: .fit)
+            Text(isHeld ? "holding" : offset.map { "\(Int(($0.distance * 100).rounded())) cm" } ?? "pivot")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(isHeld ? .white.opacity(0.6) : colour)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Phone position")
+        .accessibilityValue(offset.map { "\(Int(($0.distance * 100).rounded())) centimetres from the start" } ?? "")
+    }
 }
 
 private struct TargetMarker: View {

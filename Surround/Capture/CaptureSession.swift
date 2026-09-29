@@ -98,6 +98,14 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     /// so the world frame the shots were recorded in can no longer be
     /// trusted and a retake would aim at the wrong place.
     private(set) var worldFrameIsValid = true
+    /// How far the camera has moved from where the capture started, updated
+    /// every frame while capturing; drives the pivot gauge.
+    private(set) var pivot: PivotOffset?
+    /// True while the gauge is showing an older reading because the current
+    /// one cannot be trusted (looking at sky or ground, or an impossible jump).
+    private(set) var pivotIsHeld = false
+    @ObservationIgnored private var pivotStart: Vec3?
+    @ObservationIgnored private var lastHeading = Vec3.forward
 
     static var isSupported: Bool { ARWorldTrackingConfiguration.isSupported }
 
@@ -126,6 +134,9 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         alignment = nil
         errorMessage = nil
         worldFrameIsValid = true
+        pivot = nil
+        pivotIsHeld = false
+        pivotStart = nil
         evaluator.thresholds = thresholds
         evaluator.reset()
         transition(to: .preview)
@@ -141,6 +152,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         yawFieldOfViewDegrees = intrinsics.fovAcrossHeightDegrees
         frontYawDegrees = pose.yawDegrees
         planKind = kind
+        pivotStart = Self.position(of: frame.camera)
         startedAt = Date()
         switch kind {
         case .ring:
@@ -271,6 +283,16 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         updateTrackingWarning(frame.camera.trackingState)
         let pose = Self.pose(of: frame.camera)
         currentPose = pose
+        if phase == .capturing, let start = pivotStart {
+            if let heading = PivotGuide.heading(of: pose.rotation) { lastHeading = heading }
+            let reading = PivotGuide.offset(start: start, position: Self.position(of: frame.camera), heading: lastHeading)
+            if PivotGuide.isReliable(distance: reading.distance, pitchDegrees: pose.pitchDegrees) {
+                pivot = reading
+                if pivotIsHeld { pivotIsHeld = false }
+            } else if !pivotIsHeld {
+                pivotIsHeld = true
+            }
+        }
         guard phase == .capturing, let plan, currentTargetIndex < plan.targets.count else { return }
         let target = plan.targets[currentTargetIndex]
         let state = evaluator.evaluate(pose: pose, target: target, timestamp: frame.timestamp)
@@ -495,6 +517,19 @@ final class CaptureSession: NSObject, ARSessionDelegate {
                 c.1.x, c.1.y, c.1.z, c.1.w,
                 c.2.x, c.2.y, c.2.z, c.2.w,
                 c.3.x, c.3.y, c.3.z, c.3.w]
+    }
+
+    static func position(of camera: ARCamera) -> Vec3 {
+        let t = camera.transform.columns.3
+        return Vec3(t.x, t.y, t.z)
+    }
+
+    /// Largest distance any shot was taken from the capture's starting
+    /// point, over the shots whose position reading can be trusted.
+    var maxDriftMetres: Float? {
+        guard let start = pivotStart ?? shots.first?.pose.position, !shots.isEmpty else { return nil }
+        return PivotGuide.maxReliableDrift(from: start,
+                                           shots: shots.map { ($0.pose.position, $0.pose.cameraPose.pitchDegrees) })
     }
 
     static func pose(of camera: ARCamera) -> CameraPose {
