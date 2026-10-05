@@ -104,6 +104,13 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     /// True while the gauge is showing an older reading because the current
     /// one cannot be trusted (looking at sky or ground, or an impossible jump).
     private(set) var pivotIsHeld = false
+    /// Auto-capture is waiting because the phone has drifted too far from
+    /// the start; it resumes when the phone comes back.
+    private(set) var pivotHoldsCapture = false
+    /// The wait has lasted long enough to offer "Take it anyway".
+    private(set) var holdIsLong = false
+    @ObservationIgnored private var holdSince: TimeInterval?
+    @ObservationIgnored private let lightHaptics = UIImpactFeedbackGenerator(style: .light)
     @ObservationIgnored private var pivotStart: Vec3?
     @ObservationIgnored private var lastHeading = Vec3.forward
 
@@ -136,6 +143,9 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         worldFrameIsValid = true
         pivot = nil
         pivotIsHeld = false
+        pivotHoldsCapture = false
+        holdIsLong = false
+        holdSince = nil
         pivotStart = nil
         evaluator.thresholds = thresholds
         evaluator.reset()
@@ -286,18 +296,29 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         if phase == .capturing, let start = pivotStart {
             if let heading = PivotGuide.heading(of: pose.rotation) { lastHeading = heading }
             let reading = PivotGuide.offset(start: start, position: Self.position(of: frame.camera), heading: lastHeading)
-            if PivotGuide.isReliable(distance: reading.distance, pitchDegrees: pose.pitchDegrees) {
+            let reliable = PivotGuide.isReliable(distance: reading.distance, pitchDegrees: pose.pitchDegrees)
+            if reliable {
                 pivot = reading
                 if pivotIsHeld { pivotIsHeld = false }
             } else if !pivotIsHeld {
                 pivotIsHeld = true
             }
+            let holds = PivotGuide.holdsCapture(reading, isReliable: reliable, wasHolding: pivotHoldsCapture)
+            if holds != pivotHoldsCapture {
+                pivotHoldsCapture = holds
+                holdSince = holds ? frame.timestamp : nil
+                // A tick when the phone is back, so the user can correct
+                // without watching the gauge.
+                if !holds { lightHaptics.impactOccurred() } else { lightHaptics.prepare() }
+            }
+            let long = holds && frame.timestamp - (holdSince ?? frame.timestamp) > 3
+            if long != holdIsLong { holdIsLong = long }
         }
         guard phase == .capturing, let plan, currentTargetIndex < plan.targets.count else { return }
         let target = plan.targets[currentTargetIndex]
         let state = evaluator.evaluate(pose: pose, target: target, timestamp: frame.timestamp)
         alignment = state
-        if state.isReadyToCapture, !isCapturingFrame, trackingWarning == nil {
+        if state.isReadyToCapture, !isCapturingFrame, trackingWarning == nil, !pivotHoldsCapture {
             capture(fallback: frame, target: target)
         }
     }

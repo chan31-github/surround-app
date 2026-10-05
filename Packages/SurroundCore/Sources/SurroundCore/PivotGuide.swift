@@ -14,6 +14,13 @@ public struct PivotOffset: Equatable, Sendable {
     public var forward: Float
     /// Vertical movement in metres, positive up.
     public var up: Float
+
+    public init(distance: Float, right: Float, forward: Float, up: Float) {
+        self.distance = distance
+        self.right = right
+        self.forward = forward
+        self.up = up
+    }
 }
 
 public enum PivotGuide {
@@ -67,6 +74,63 @@ public enum PivotGuide {
             .filter { isReliable(distance: $0.distance, pitchDegrees: $0.pitch) }
             .map { $0.distance }
             .max()
+    }
+}
+
+/// What to tell the user to get the phone back over the start spot.
+public struct PivotInstruction: Equatable, Sendable {
+    /// "Step back and to the left".
+    public var text: String
+    /// Direction to move, clockwise from straight ahead, in degrees; the
+    /// gauge's up is straight ahead.
+    public var arrowDegrees: Float
+    /// A habit to change, when the drift looks like leaning into a tilt.
+    public var tip: String?
+}
+
+extension PivotGuide {
+    /// Auto-capture waits while the phone is further than this from the
+    /// start, and resumes below `releaseDistance`; the gap stops it
+    /// flickering at the boundary.
+    public static let holdDistance: Float = warningDistance
+    public static let releaseDistance: Float = warningDistance - 0.03
+
+    /// Words and an arrow for getting back to the start. Only directions
+    /// that carry at least 40 percent of the correction are named, so small
+    /// sideways components do not clutter "Step back". Nil when the phone is
+    /// already within the comfortable distance.
+    public static func instruction(for offset: PivotOffset, pitchDegrees: Float = 0) -> PivotInstruction? {
+        let horizontal = (offset.right * offset.right + offset.forward * offset.forward).squareRoot()
+        guard offset.distance > comfortableDistance, horizontal > 0.03 else { return nil }
+        // The correction is the opposite of the drift.
+        let moveRight = -offset.right
+        let moveForward = -offset.forward
+        let major = max(abs(moveRight), abs(moveForward))
+        var parts: [String] = []
+        if abs(moveForward) >= 0.4 * major {
+            parts.append(moveForward > 0 ? "forward" : "back")
+        }
+        if abs(moveRight) >= 0.4 * major {
+            parts.append(moveRight > 0 ? "to the right" : "to the left")
+        }
+        let text = "Step " + parts.joined(separator: " and ")
+        let arrow = Angle.degrees(atan2(moveRight, moveForward))
+
+        // Tilting the phone down tends to push it forward, and up to pull it back.
+        var tip: String?
+        if pitchDegrees < -20, offset.forward > 0.12 {
+            tip = "Tilt the phone, don't lean forward"
+        } else if pitchDegrees > 20, offset.forward < -0.12 {
+            tip = "Tilt the phone, don't lean back"
+        }
+        return PivotInstruction(text: text, arrowDegrees: arrow, tip: tip)
+    }
+
+    /// Whether auto-capture should wait, given whether it was already
+    /// waiting. Readings that cannot be trusted never hold a shot.
+    public static func holdsCapture(_ offset: PivotOffset?, isReliable: Bool, wasHolding: Bool) -> Bool {
+        guard isReliable, let offset else { return false }
+        return offset.distance > (wasHolding ? releaseDistance : holdDistance)
     }
 }
 

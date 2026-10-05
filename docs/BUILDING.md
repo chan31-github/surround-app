@@ -187,15 +187,23 @@ removing them costs nothing today. The Mac harness reads either encoding.
 
 ## Pivot gauge
 
-Every capture so far drifted 20 to 40 cm from where it started, with the
-largest distance when facing backwards: the lens circles the body when the
-user turns on the spot with the phone held in front. Parallax from that is
-what splits posts and railings at the seams. During capture a small top-down
-gauge beside the sphere map shows where the phone is relative to the start,
-with the user facing up the gauge: green within 10 cm, yellow to 25, red
-beyond, with a banner past 25 cm asking the user to keep the phone over one
-spot and step around it. The review screen notes the largest drift when it
-was over 25 cm. The logic is `PivotGuide` in the core package.
+Every capture so far drifted 20 to 45 cm from where it started, largest when
+facing backwards and on the downward ring: the lens circles the body when
+the user turns on the spot, and tilting down pushes the phone forward.
+Parallax from that is what splits rails and posts at the seams.
+
+The gauge beside the sphere map is drawn like the aiming target: the
+crosshair is the phone, the ring is the spot the capture started from, seen
+from above with straight ahead at the top, and the user moves so the
+crosshair sits in the ring. Green within 10 cm, yellow to 25, red beyond.
+Past 25 cm a banner says which way to step ("Step back and to the left"),
+with an arrow and, when the drift looks like leaning into a tilt, "Tilt the
+phone, don't lean forward". Auto-capture waits while the phone is over
+25 cm out and resumes below 22 cm, with a light haptic tick; the target
+circle turns grey meanwhile. After three seconds of waiting "Take it anyway"
+appears. Readings that cannot be trusted never hold a shot. The logic is
+`PivotGuide` in the core package; launch a Debug build in the simulator with
+`-pivotGallery` to see the gauge and banner in sample states.
 
 Position readings are ignored while the phone points more than 55 degrees
 up or down, or when they put the phone more than 90 cm from the start: with
@@ -217,9 +225,12 @@ does not. The paid Apple Developer Program signs for a year.
 ## Live preview, finish early, retake last
 
 During capture every still is pasted into the AR view at the pose it was
-taken from, slightly translucent, so the sphere grows behind the live
-camera as you turn and the next frame can be lined up against its
-neighbours. "Retake last" drops the most recent shot and re-arms its
+taken from, so the sphere grows behind the live camera as you turn and the
+next frame can be lined up against its neighbours. The stills are muted,
+desaturated with a cool tint at 70 percent opacity and edged with a thin
+light border, while the live camera stays full colour: vivid is live,
+muted is taken. Pressing and holding anywhere on the preview hides the
+stills; a hint says so for the first few shots. "Retake last" drops the most recent shot and re-arms its
 target. "Finish" appears once the horizon ring is closed and stitches what
 has been taken; the format records partial coverage.
 

@@ -23,8 +23,9 @@ struct CaptureOverlay: View {
                     let distance = hypot(dx, dy)
                     let scale = distance > maxRadius ? maxRadius / distance : 1
                     TargetMarker(aligned: alignment.isAligned,
-                                 ready: alignment.isReadyToCapture,
-                                 farAway: distance > maxRadius)
+                                 ready: alignment.isReadyToCapture && !capture.pivotHoldsCapture,
+                                 farAway: distance > maxRadius,
+                                 waiting: capture.pivotHoldsCapture)
                         .position(x: centre.x + dx * scale, y: centre.y + dy * scale)
                         .animation(.linear(duration: 0.05), value: dx + dy)
                 }
@@ -52,14 +53,10 @@ struct CaptureOverlay: View {
                     .background(.yellow, in: Capsule())
                     .foregroundStyle(.black)
             }
-            if capture.phase == .capturing, !capture.pivotIsHeld, let pivot = capture.pivot, pivot.distance > PivotGuide.warningDistance {
-                Text("The phone has moved \(Int((pivot.distance * 100).rounded())) cm. Keep it over one spot and step around it.")
-                    .font(.subheadline.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
-                    .foregroundStyle(.white)
+            if capture.phase == .capturing, !capture.pivotIsHeld, let pivot = capture.pivot,
+               pivot.distance > PivotGuide.warningDistance,
+               let instruction = PivotGuide.instruction(for: pivot, pitchDegrees: capture.currentPose?.pitchDegrees ?? 0) {
+                PivotBanner(instruction: instruction, distance: pivot.distance, holding: capture.pivotHoldsCapture)
             }
             if let plan = capture.plan {
                 HStack(alignment: .center, spacing: 10) {
@@ -78,6 +75,11 @@ struct CaptureOverlay: View {
                 Text(progressText(plan))
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.white)
+                if capture.phase == .capturing, (1...4).contains(capture.shots.count), capture.retakingIndex == nil {
+                    Text("Hold a finger on the screen to see the camera alone")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.75))
+                }
             }
             if let pose = capture.currentPose {
                 Text(String(format: "yaw %.0f°  pitch %.0f°  roll %.0f°", pose.yawDegrees, pose.pitchDegrees, pose.rollDegrees()))
@@ -128,6 +130,18 @@ struct CaptureOverlay: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(capture.isCapturingFrame)
+                } else if capture.phase == .capturing, capture.holdIsLong {
+                    // The wait is a guide, not a rule: after a few seconds the
+                    // user can take the shot where they are.
+                    Button {
+                        capture.captureNow()
+                    } label: {
+                        Label("Take it anyway", systemImage: "camera")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
                     .disabled(capture.isCapturingFrame)
                 } else if capture.phase == .capturing {
                     Button {
@@ -218,18 +232,19 @@ struct CaptureOverlay: View {
         case .preview:
             switch planKind {
             case .ring:
-                return "Hold the phone upright. Centre the view you want in front, then tap Start."
+                return "Hold the phone upright. Centre the view you want in front, then tap Start. Hold the phone still in the air and walk round it, as if it were on a tripod."
             case .sphere:
-                return "Centre the view you want in front, then tap Start. Keep the phone over one spot and step your feet around it, rather than turning on the spot."
+                return "Centre the view you want in front, then tap Start. Hold the phone still in the air and walk round it, as if it were on a tripod."
             }
         case .capturing:
             if capture.isCapturingFrame { return "Hold still" }
+            if capture.pivotHoldsCapture { return "Move back over the start spot to take this shot. The small gauge shows where it is." }
             guard let a = capture.alignment else { return "" }
             if a.isAligned, !a.isSteady { return "Hold still" }
             if abs(a.deltaPitchDegrees) > 8, abs(a.deltaPitchDegrees) > abs(a.deltaYawDegrees) {
                 return a.deltaPitchDegrees > 0 ? "Tilt up to the next target." : "Tilt down to the next target."
             }
-            return "Turn slowly to the right until the circle meets the crosshair."
+            return "Walk slowly round the phone to the right until the circle meets the crosshair."
         default:
             return ""
         }
@@ -237,12 +252,13 @@ struct CaptureOverlay: View {
 
 }
 
-/// Where the phone is relative to where the capture started, seen from
-/// above with the user facing up the gauge. The green disc has a 10 cm
-/// radius and the ring 25 cm; the dot should stay in the green. Turning on
-/// the spot swings it round the ring; stepping around the phone keeps it
-/// in the middle.
-private struct PivotGauge: View {
+/// The pivot gauge, drawn like the aiming target: the crosshair in the
+/// middle is the phone, the ring is the spot the capture started from, seen
+/// from above with straight ahead at the top. Move so the crosshair sits in
+/// the ring, just as the aiming circle is brought onto the crosshair. The
+/// ring has the comfortable 10 cm radius; it turns yellow beyond that and
+/// red past 25 cm, when shots wait.
+struct PivotGauge: View {
     let offset: PivotOffset?
     /// Pointing at sky or ground, where position cannot be tracked: the last
     /// good reading is shown faded until the phone comes back to the horizon.
@@ -263,25 +279,24 @@ private struct PivotGauge: View {
                 let radius = min(geo.size.width, geo.size.height) / 2
                 let scale = radius / CGFloat(range)
                 let centre = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
+                let ring = CGFloat(PivotGuide.comfortableDistance) * scale * 2
                 ZStack {
                     Circle().fill(.black.opacity(0.35))
-                    Circle()
-                        .fill(.green.opacity(0.3))
-                        .frame(width: CGFloat(PivotGuide.comfortableDistance) * scale * 2,
-                               height: CGFloat(PivotGuide.comfortableDistance) * scale * 2)
-                    Circle()
-                        .strokeBorder(.white.opacity(0.4), lineWidth: 1)
-                        .frame(width: CGFloat(PivotGuide.warningDistance) * scale * 2,
-                               height: CGFloat(PivotGuide.warningDistance) * scale * 2)
                     if let o = offset {
-                        let dx = CGFloat(max(-range, min(range, o.right))) * scale
-                        let dy = -CGFloat(max(-range, min(range, o.forward))) * scale
+                        // Where the start spot is from here: the opposite of the drift.
+                        let dx = CGFloat(max(-range, min(range, -o.right))) * scale
+                        let dy = CGFloat(max(-range, min(range, o.forward))) * scale
                         Circle()
-                            .fill(colour.opacity(isHeld ? 0.35 : 1))
-                            .frame(width: 9, height: 9)
+                            .fill(colour.opacity(isHeld ? 0.12 : 0.3))
+                            .overlay(Circle().strokeBorder(colour.opacity(isHeld ? 0.4 : 1), lineWidth: 2))
+                            .frame(width: ring, height: ring)
                             .position(x: centre.x + dx, y: centre.y + dy)
                     }
+                    // The phone.
+                    Rectangle().fill(.white).frame(width: 12, height: 1.5).position(centre)
+                    Rectangle().fill(.white).frame(width: 1.5, height: 12).position(centre)
                 }
+                .clipShape(Circle())
             }
             .aspectRatio(1, contentMode: .fit)
             Text(isHeld ? "holding" : offset.map { "\(Int(($0.distance * 100).rounded())) cm" } ?? "pivot")
@@ -289,15 +304,93 @@ private struct PivotGauge: View {
                 .foregroundStyle(isHeld ? .white.opacity(0.6) : colour)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Phone position")
-        .accessibilityValue(offset.map { "\(Int(($0.distance * 100).rounded())) centimetres from the start" } ?? "")
+        .accessibilityLabel("Start spot")
+        .accessibilityValue(offset.flatMap { PivotGuide.instruction(for: $0)?.text } ?? "On the spot")
     }
 }
+
+/// What to do about the drift, in words and an arrow: which way to step,
+/// how far, a habit to change when there is one, and whether the shot is
+/// waiting. The arrow points the way to step, with straight ahead up.
+struct PivotBanner: View {
+    let instruction: PivotInstruction
+    let distance: Float
+    let holding: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "arrow.up")
+                .font(.title.weight(.bold))
+                .rotationEffect(.degrees(Double(instruction.arrowDegrees)))
+                .frame(width: 36, height: 36)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(instruction.text)
+                    .font(.headline)
+                if let tip = instruction.tip {
+                    Text(tip)
+                        .font(.footnote.weight(.semibold))
+                }
+                Text("\(Int((distance * 100).rounded())) cm from the start" + (holding ? " · the shot waits until you're back" : ""))
+                    .font(.footnote)
+                    .opacity(0.9)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.red.opacity(0.88), in: RoundedRectangle(cornerRadius: 12))
+        .foregroundStyle(.white)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+#if DEBUG
+/// A gallery of pivot states for checking the gauge and banner in the
+/// simulator, which has no camera. Launch with -pivotGallery.
+struct PivotGallery: View {
+    private static func offset(_ right: Float, _ forward: Float) -> PivotOffset {
+        PivotOffset(distance: (right * right + forward * forward).squareRoot(), right: right, forward: forward, up: 0)
+    }
+
+    private let cases: [(String, PivotOffset, Float, Bool)] = [
+        ("On the spot", offset(0.03, 0.02), 0, false),
+        ("Drifted right 18 cm", offset(0.18, 0), 0, false),
+        ("Ahead and right, waiting", offset(0.2, 0.25), 0, true),
+        ("Tilted down, leaning forward", offset(0.02, 0.32), -40, true),
+        ("Behind and left", offset(-0.22, -0.2), 0, true),
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                ForEach(cases.indices, id: \.self) { i in
+                    let c = cases[i]
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(c.0).font(.caption).foregroundStyle(.secondary)
+                        HStack(alignment: .top, spacing: 12) {
+                            PivotGauge(offset: c.1).frame(width: 60, height: 72)
+                            if c.1.distance > PivotGuide.warningDistance,
+                               let instruction = PivotGuide.instruction(for: c.1, pitchDegrees: c.2) {
+                                PivotBanner(instruction: instruction, distance: c.1.distance, holding: c.3)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding()
+        }
+        .background(Color(white: 0.25))
+        .preferredColorScheme(.dark)
+    }
+}
+#endif
 
 private struct TargetMarker: View {
     let aligned: Bool
     let ready: Bool
     let farAway: Bool
+    /// Aimed, but the shot is waiting for the phone to come back over the start.
+    var waiting = false
 
     var body: some View {
         Circle()
@@ -308,6 +401,7 @@ private struct TargetMarker: View {
     }
 
     private var colour: Color {
+        if waiting { return .gray }
         if ready { return .green }
         if aligned { return .yellow }
         return .white

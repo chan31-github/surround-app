@@ -50,4 +50,43 @@ final class PivotGuideTests: XCTestCase {
         XCTAssertEqual(PivotGuide.maxReliableDrift(from: start, shots: shots) ?? 0, 0.51, accuracy: 1e-5)
         XCTAssertNil(PivotGuide.maxReliableDrift(from: start, shots: [(start + Vec3(0, 2, 0), 10)]))
     }
+
+    private func offset(right: Float, forward: Float, up: Float = 0) -> PivotOffset {
+        PivotOffset(distance: (right * right + forward * forward + up * up).squareRoot(), right: right, forward: forward, up: up)
+    }
+
+    func testInstructionNamesTheWayBack() {
+        // Drifted ahead and to the right: step back and to the left, arrow behind-left.
+        var i = PivotGuide.instruction(for: offset(right: 0.2, forward: 0.25))
+        XCTAssertEqual(i?.text, "Step back and to the left")
+        XCTAssertEqual(i?.arrowDegrees ?? 0, Angle.degrees(atan2(-0.2, -0.25)), accuracy: 0.01)
+        // Mostly sideways: the small forward part is not mentioned.
+        i = PivotGuide.instruction(for: offset(right: -0.3, forward: 0.05))
+        XCTAssertEqual(i?.text, "Step to the right")
+        XCTAssertEqual(i?.arrowDegrees ?? 0, 99.5, accuracy: 0.5)  // right and a little behind
+        i = PivotGuide.instruction(for: offset(right: 0.02, forward: -0.28))
+        XCTAssertEqual(i?.text, "Step forward")
+        // Close enough, or only a height change: nothing to say.
+        XCTAssertNil(PivotGuide.instruction(for: offset(right: 0.05, forward: 0.05)))
+        XCTAssertNil(PivotGuide.instruction(for: offset(right: 0, forward: 0.01, up: -0.3)))
+    }
+
+    func testTipsForLeaningIntoATilt() {
+        XCTAssertEqual(PivotGuide.instruction(for: offset(right: 0, forward: 0.3), pitchDegrees: -40)?.tip,
+                       "Tilt the phone, don't lean forward")
+        XCTAssertEqual(PivotGuide.instruction(for: offset(right: 0, forward: -0.3), pitchDegrees: 40)?.tip,
+                       "Tilt the phone, don't lean back")
+        XCTAssertNil(PivotGuide.instruction(for: offset(right: 0, forward: 0.3), pitchDegrees: 0)?.tip)
+    }
+
+    func testHoldHasHysteresisAndIgnoresUntrustedReadings() {
+        let far = offset(right: 0.26, forward: 0)
+        let between = offset(right: 0.235, forward: 0)
+        let near = offset(right: 0.2, forward: 0)
+        XCTAssertTrue(PivotGuide.holdsCapture(far, isReliable: true, wasHolding: false))
+        XCTAssertFalse(PivotGuide.holdsCapture(between, isReliable: true, wasHolding: false))
+        XCTAssertTrue(PivotGuide.holdsCapture(between, isReliable: true, wasHolding: true))
+        XCTAssertFalse(PivotGuide.holdsCapture(near, isReliable: true, wasHolding: true))
+        XCTAssertFalse(PivotGuide.holdsCapture(far, isReliable: false, wasHolding: true))
+    }
 }
